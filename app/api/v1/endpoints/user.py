@@ -24,11 +24,23 @@ async def get_user_history(
         limit_days=limit_days,
     )
 
+    trends = {"value_factor_trend": [], "combined_trend": []}
+    if history:
+        trends = await user_service.get_user_metric_trends_by_event(
+            db=db,
+            wq_id=current_user.wq_id,
+            start_date=history[0].record_date,
+            end_date=history[-1].record_date,
+        )
+
     result = [
         {
             "record_date": record.record_date.isoformat() if record.record_date else None,
             "weight_factor": record.weight_factor,
             "value_factor": record.value_factor,
+            "combined_alpha_performance": None,
+            "combined_power_pool_alpha_performance": None,
+            "combined_selected_alpha_performance": None,
             "submissions_count": record.submissions_count,
             "mean_prod_correlation": record.mean_prod_correlation,
             "mean_self_correlation": record.mean_self_correlation,
@@ -45,6 +57,8 @@ async def get_user_history(
         "wq_id": current_user.wq_id,
         "username": current_user.username,
         "data": result,
+        "value_factor_trend": trends["value_factor_trend"],
+        "combined_trend": trends["combined_trend"],
     }
 
 

@@ -95,3 +95,142 @@ class UserWeightData(BaseModel):
     class Config:
         from_attributes = True
 
+
+class ValueFactorSummary(BaseModel):
+    users_on_target_date: int
+    users_on_base_date: int
+    comparable_users: int
+    new_users: int
+    missing_users: int
+    increased_users: int
+    decreased_users: int
+    unchanged_users: int
+    avg_target_value_factor: float
+    avg_base_value_factor: float
+    avg_change: float
+    median_change: float
+    max_increase: float
+    max_decrease: float
+
+
+class ValueFactorDimensionItem(BaseModel):
+    dimension: str
+    comparable_users: int
+    avg_target_value_factor: float
+    avg_base_value_factor: float
+    avg_change: float
+    median_change: float
+    increased_users: int
+    decreased_users: int
+    unchanged_users: int
+
+
+class ValueFactorUserChangeItem(BaseModel):
+    user: str
+    country: Optional[str] = None
+    university: Optional[str] = None
+    genius_level: Optional[str] = None
+    base_value_factor: float
+    target_value_factor: float
+    change: float
+
+
+class ValueFactorDistribution(BaseModel):
+    labels: list[str]
+    counts: list[int]
+
+
+class ValueFactorUserChangePageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ValueFactorUserChangeItem]
+
+
+class ValueFactorAnalysisResponse(BaseModel):
+    base_record_date: str
+    target_record_date: str
+    summary: ValueFactorSummary
+    by_country: list[ValueFactorDimensionItem]
+    by_university: list[ValueFactorDimensionItem]
+    top_gainers: list[ValueFactorUserChangeItem]
+    top_decliners: list[ValueFactorUserChangeItem]
+    distribution: ValueFactorDistribution
+
+
+class CombinedSummary(BaseModel):
+    users_on_target_date: int
+    users_on_base_date: int
+    comparable_users: int
+    new_users: int
+    missing_users: int
+
+
+class CombinedMetricSummary(BaseModel):
+    metric: str
+    display_name: str
+    avg_target: float
+    avg_base: float
+    avg_change: float
+    median_change: float
+    max_increase: float
+    max_decrease: float
+    increased_users: int
+    decreased_users: int
+    unchanged_users: int
+
+
+class CombinedDistribution(BaseModel):
+    labels: list[str]
+    counts: list[int]
+
+
+class CombinedAnalysisResponse(BaseModel):
+    base_record_date: str
+    target_record_date: str
+    summary: CombinedSummary
+    metric_summaries: list[CombinedMetricSummary]
+    distributions: dict[str, CombinedDistribution]
+
+
+class CombinedUserChangeItem(BaseModel):
+    user: str
+    country: Optional[str] = None
+    genius_level: Optional[str] = None
+    base_alpha: float
+    target_alpha: float
+    alpha_change: float
+    base_power_pool: float
+    target_power_pool: float
+    power_pool_change: float
+    base_selected: float
+    target_selected: float
+    selected_change: float
+
+
+class CombinedUserChangePageResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[CombinedUserChangeItem]
+
+
+class ValueFactorTrendPoint(BaseModel):
+    update_date: str
+    date_range: str
+    value_factor: Optional[float] = None
+
+
+class CombinedTrendPoint(BaseModel):
+    update_date: str
+    date_range: str
+    combined_alpha_performance: Optional[float] = None
+    combined_power_pool_alpha_performance: Optional[float] = None
+    combined_selected_alpha_performance: Optional[float] = None
+
+
+class UserMetricTrendResponse(BaseModel):
+    user: str
+    value_factor_trend: list[ValueFactorTrendPoint]
+    combined_trend: list[CombinedTrendPoint]
+

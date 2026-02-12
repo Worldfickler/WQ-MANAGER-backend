@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Date, Double, Boolean, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, Date, Double, Boolean, BigInteger, Text
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -107,3 +107,16 @@ class LeaderboardGeniusUser(Base):
 
     def __repr__(self):
         return f"<LeaderboardGeniusUser(id={self.id}, user={self.user}, record_date={self.record_date})>"
+
+
+class EventUpdateRecord(Base):
+    __tablename__ = "event_update_record"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    update_content = Column(String(32), nullable=True)
+    update_date = Column(Date, nullable=True, index=True)
+    date_range = Column(String(64), nullable=True)
+    remark = Column(Text, nullable=True)
+
+    def __repr__(self):
+        return f"<EventUpdateRecord(id={self.id}, update_content={self.update_content}, update_date={self.update_date})>"

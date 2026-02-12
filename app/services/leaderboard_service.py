@@ -5,6 +5,7 @@ from app.models.leaderboard import (
     LeaderboardConsultantUser,
     LeaderboardGeniusCountryOrRegion,
     LeaderboardGeniusUser,
+    EventUpdateRecord,
 )
 from typing import List, Dict
 from datetime import date
@@ -22,8 +23,18 @@ __all__ = [
     "get_available_countries",
     "get_country_leaderboard",
     "get_user_leaderboard",
-    "get_summary_statistics"
+    "get_summary_statistics",
+    "get_value_factor_analysis",
+    "get_value_factor_user_changes",
+    "get_combined_analysis",
+    "get_combined_user_changes",
+    "get_user_metric_trends_by_event",
 ]
+
+VALUE_FACTOR_BASE_DATE = date(2026, 2, 10)
+VALUE_FACTOR_TARGET_DATE = date(2026, 2, 11)
+COMBINED_BASE_DATE = date(2026, 2, 10)
+COMBINED_TARGET_DATE = date(2026, 2, 11)
 
 
 def get_country_weight_time_series(db: Session, countries: List[str] = None, limit_days: int = 30) -> Dict:
@@ -962,4 +973,818 @@ def get_user_weight_time_series(
         "user": normalized,
         "dates": dates,
         "weights": weights,
+    }
+
+
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 0:
+        return (sorted_values[mid - 1] + sorted_values[mid]) / 2
+    return sorted_values[mid]
+
+
+def _build_distribution(values: List[float], bins: int = 10) -> Dict[str, List]:
+    if not values:
+        return {"labels": [], "counts": []}
+
+    min_value = min(values)
+    max_value = max(values)
+    if min_value == max_value:
+        return {
+            "labels": [f"{min_value:.4f}"],
+            "counts": [len(values)],
+        }
+
+    step = (max_value - min_value) / bins
+    counts = [0 for _ in range(bins)]
+    labels: List[str] = []
+    for i in range(bins):
+        start = min_value + step * i
+        end = max_value if i == bins - 1 else min_value + step * (i + 1)
+        labels.append(f"{start:.4f}~{end:.4f}")
+
+    for value in values:
+        index = min(int((value - min_value) / step), bins - 1)
+        counts[index] += 1
+
+    return {"labels": labels, "counts": counts}
+
+
+def _aggregate_value_factor_dimension(
+    records: List[Dict],
+    key_name: str,
+    *,
+    top_n: int = 20,
+) -> List[Dict]:
+    grouped: Dict[str, Dict[str, List[float] | int]] = {}
+    for item in records:
+        key = str(item.get(key_name) or "UNKNOWN")
+        if key not in grouped:
+            grouped[key] = {
+                "target_values": [],
+                "base_values": [],
+                "changes": [],
+                "increased": 0,
+                "decreased": 0,
+                "unchanged": 0,
+            }
+
+        change = float(item["change"])
+        grouped[key]["target_values"].append(float(item["target_value_factor"]))
+        grouped[key]["base_values"].append(float(item["base_value_factor"]))
+        grouped[key]["changes"].append(change)
+        if change > 0:
+            grouped[key]["increased"] += 1
+        elif change < 0:
+            grouped[key]["decreased"] += 1
+        else:
+            grouped[key]["unchanged"] += 1
+
+    results: List[Dict] = []
+    for key, agg in grouped.items():
+        target_values = agg["target_values"]
+        base_values = agg["base_values"]
+        changes = agg["changes"]
+        comparable_users = len(changes)
+        if comparable_users == 0:
+            continue
+
+        results.append({
+            "dimension": key,
+            "comparable_users": comparable_users,
+            "avg_target_value_factor": round(sum(target_values) / comparable_users, 4),
+            "avg_base_value_factor": round(sum(base_values) / comparable_users, 4),
+            "avg_change": round(sum(changes) / comparable_users, 4),
+            "median_change": round(_median(changes), 4),
+            "increased_users": int(agg["increased"]),
+            "decreased_users": int(agg["decreased"]),
+            "unchanged_users": int(agg["unchanged"]),
+        })
+
+    results.sort(key=lambda item: (-item["comparable_users"], -item["avg_change"], item["dimension"]))
+    return results[:top_n]
+
+
+def get_value_factor_user_changes(
+    db: Session,
+    sort_by: str = "change",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    countries: List[str] | None = None,
+    genius_levels: List[str] | None = None,
+    exclude_both_half: bool = False,
+) -> Dict:
+    target_consultant_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        func.max(LeaderboardConsultantUser.value_factor).label("target_value_factor"),
+        func.max(LeaderboardConsultantUser.country).label("target_country"),
+        func.max(LeaderboardConsultantUser.university).label("target_university"),
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardConsultantUser.user.isnot(None),
+        LeaderboardConsultantUser.value_factor.isnot(None),
+    ).group_by(
+        LeaderboardConsultantUser.user,
+    ).subquery()
+
+    base_consultant_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        func.max(LeaderboardConsultantUser.value_factor).label("base_value_factor"),
+        func.max(LeaderboardConsultantUser.country).label("base_country"),
+        func.max(LeaderboardConsultantUser.university).label("base_university"),
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardConsultantUser.user.isnot(None),
+        LeaderboardConsultantUser.value_factor.isnot(None),
+    ).group_by(
+        LeaderboardConsultantUser.user,
+    ).subquery()
+
+    target_genius_subq = db.query(
+        LeaderboardGeniusUser.user.label("user"),
+        func.max(LeaderboardGeniusUser.genius_level).label("target_genius_level"),
+        func.max(LeaderboardGeniusUser.country).label("target_genius_country"),
+    ).filter(
+        LeaderboardGeniusUser.delete_flag == False,
+        LeaderboardGeniusUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardGeniusUser.user.isnot(None),
+    ).group_by(
+        LeaderboardGeniusUser.user,
+    ).subquery()
+
+    base_genius_subq = db.query(
+        LeaderboardGeniusUser.user.label("user"),
+        func.max(LeaderboardGeniusUser.genius_level).label("base_genius_level"),
+        func.max(LeaderboardGeniusUser.country).label("base_genius_country"),
+    ).filter(
+        LeaderboardGeniusUser.delete_flag == False,
+        LeaderboardGeniusUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardGeniusUser.user.isnot(None),
+    ).group_by(
+        LeaderboardGeniusUser.user,
+    ).subquery()
+
+    users_subq = db.query(target_consultant_subq.c.user.label("user")).union(
+        db.query(base_consultant_subq.c.user.label("user"))
+    ).subquery()
+
+    rows = db.query(
+        users_subq.c.user,
+        target_consultant_subq.c.target_value_factor,
+        base_consultant_subq.c.base_value_factor,
+        func.coalesce(
+            target_genius_subq.c.target_genius_level,
+            base_genius_subq.c.base_genius_level,
+        ).label("genius_level"),
+        func.coalesce(
+            target_genius_subq.c.target_genius_country,
+            base_genius_subq.c.base_genius_country,
+            target_consultant_subq.c.target_country,
+            base_consultant_subq.c.base_country,
+        ).label("country"),
+        func.coalesce(
+            target_consultant_subq.c.target_university,
+            base_consultant_subq.c.base_university,
+        ).label("university"),
+    ).outerjoin(
+        target_consultant_subq,
+        users_subq.c.user == target_consultant_subq.c.user,
+    ).outerjoin(
+        base_consultant_subq,
+        users_subq.c.user == base_consultant_subq.c.user,
+    ).outerjoin(
+        target_genius_subq,
+        users_subq.c.user == target_genius_subq.c.user,
+    ).outerjoin(
+        base_genius_subq,
+        users_subq.c.user == base_genius_subq.c.user,
+    ).all()
+
+    filtered_rows: List[Dict] = []
+    for row in rows:
+        target_value = float(row.target_value_factor) if row.target_value_factor is not None else None
+        base_value = float(row.base_value_factor) if row.base_value_factor is not None else None
+        if target_value is None or base_value is None:
+            continue
+
+        if exclude_both_half and abs(base_value - 0.5) < 1e-9 and abs(target_value - 0.5) < 1e-9:
+            continue
+
+        row_country = str(row.country) if row.country is not None else None
+        row_genius_level = str(row.genius_level) if row.genius_level is not None else None
+
+        if countries and row_country not in countries:
+            continue
+        if genius_levels and row_genius_level not in genius_levels:
+            continue
+
+        filtered_rows.append({
+            "user": row.user,
+            "country": row_country,
+            "university": row.university,
+            "genius_level": row_genius_level,
+            "base_value_factor": base_value,
+            "target_value_factor": target_value,
+            "change": target_value - base_value,
+        })
+
+    sort_field = "change"
+    if sort_by in {"base_value_factor", "target_value_factor", "change"}:
+        sort_field = sort_by
+
+    reverse = sort_order != "asc"
+    filtered_rows.sort(key=lambda item: item[sort_field], reverse=reverse)
+
+    safe_page = max(page, 1)
+    safe_page_size = max(page_size, 1)
+    total = len(filtered_rows)
+    start_index = (safe_page - 1) * safe_page_size
+    end_index = start_index + safe_page_size
+    page_items = filtered_rows[start_index:end_index]
+
+    return {
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "items": [
+            {
+                "user": item["user"],
+                "country": item["country"],
+                "university": item["university"],
+                "genius_level": item["genius_level"],
+                "base_value_factor": round(item["base_value_factor"], 4),
+                "target_value_factor": round(item["target_value_factor"], 4),
+                "change": round(item["change"], 4),
+            }
+            for item in page_items
+        ],
+    }
+
+
+def _collect_combined_rows(
+    db: Session,
+    countries: List[str] | None = None,
+    genius_levels: List[str] | None = None,
+    exclude_alpha_both_zero: bool = False,
+    exclude_power_pool_both_zero: bool = False,
+    exclude_selected_both_zero: bool = False,
+) -> Dict:
+    target_subq = db.query(
+        LeaderboardGeniusUser.user.label("user"),
+        func.max(LeaderboardGeniusUser.combined_alpha_performance).label("target_alpha"),
+        func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label("target_power_pool"),
+        func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label("target_selected"),
+        func.max(LeaderboardGeniusUser.country).label("target_country"),
+        func.max(LeaderboardGeniusUser.genius_level).label("target_genius_level"),
+    ).filter(
+        LeaderboardGeniusUser.delete_flag == False,
+        LeaderboardGeniusUser.record_date == COMBINED_TARGET_DATE,
+        LeaderboardGeniusUser.user.isnot(None),
+    ).group_by(
+        LeaderboardGeniusUser.user,
+    ).subquery()
+
+    base_subq = db.query(
+        LeaderboardGeniusUser.user.label("user"),
+        func.max(LeaderboardGeniusUser.combined_alpha_performance).label("base_alpha"),
+        func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label("base_power_pool"),
+        func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label("base_selected"),
+        func.max(LeaderboardGeniusUser.country).label("base_country"),
+        func.max(LeaderboardGeniusUser.genius_level).label("base_genius_level"),
+    ).filter(
+        LeaderboardGeniusUser.delete_flag == False,
+        LeaderboardGeniusUser.record_date == COMBINED_BASE_DATE,
+        LeaderboardGeniusUser.user.isnot(None),
+    ).group_by(
+        LeaderboardGeniusUser.user,
+    ).subquery()
+
+    users_subq = db.query(target_subq.c.user.label("user")).union(
+        db.query(base_subq.c.user.label("user"))
+    ).subquery()
+
+    rows = db.query(
+        users_subq.c.user,
+        target_subq.c.target_alpha,
+        base_subq.c.base_alpha,
+        target_subq.c.target_power_pool,
+        base_subq.c.base_power_pool,
+        target_subq.c.target_selected,
+        base_subq.c.base_selected,
+        func.coalesce(target_subq.c.target_country, base_subq.c.base_country).label("country"),
+        func.coalesce(target_subq.c.target_genius_level, base_subq.c.base_genius_level).label("genius_level"),
+    ).outerjoin(
+        target_subq,
+        users_subq.c.user == target_subq.c.user,
+    ).outerjoin(
+        base_subq,
+        users_subq.c.user == base_subq.c.user,
+    ).all()
+
+    comparable_rows: List[Dict] = []
+    users_on_target_date = 0
+    users_on_base_date = 0
+    new_users = 0
+    missing_users = 0
+
+    for row in rows:
+        target_ready = (
+            row.target_alpha is not None
+            and row.target_power_pool is not None
+            and row.target_selected is not None
+        )
+        base_ready = (
+            row.base_alpha is not None
+            and row.base_power_pool is not None
+            and row.base_selected is not None
+        )
+
+        if target_ready:
+            users_on_target_date += 1
+        if base_ready:
+            users_on_base_date += 1
+        if target_ready and not base_ready:
+            new_users += 1
+        if base_ready and not target_ready:
+            missing_users += 1
+        if not target_ready or not base_ready:
+            continue
+
+        row_country = str(row.country) if row.country is not None else None
+        row_genius_level = str(row.genius_level) if row.genius_level is not None else None
+        if countries and row_country not in countries:
+            continue
+        if genius_levels and row_genius_level not in genius_levels:
+            continue
+
+        base_alpha = float(row.base_alpha)
+        target_alpha = float(row.target_alpha)
+        base_power_pool = float(row.base_power_pool)
+        target_power_pool = float(row.target_power_pool)
+        base_selected = float(row.base_selected)
+        target_selected = float(row.target_selected)
+
+        if exclude_alpha_both_zero and abs(base_alpha) < 1e-12 and abs(target_alpha) < 1e-12:
+            continue
+        if exclude_power_pool_both_zero and abs(base_power_pool) < 1e-12 and abs(target_power_pool) < 1e-12:
+            continue
+        if exclude_selected_both_zero and abs(base_selected) < 1e-12 and abs(target_selected) < 1e-12:
+            continue
+
+        comparable_rows.append({
+            "user": row.user,
+            "country": row_country,
+            "genius_level": row_genius_level,
+            "base_alpha": base_alpha,
+            "target_alpha": target_alpha,
+            "alpha_change": target_alpha - base_alpha,
+            "base_power_pool": base_power_pool,
+            "target_power_pool": target_power_pool,
+            "power_pool_change": target_power_pool - base_power_pool,
+            "base_selected": base_selected,
+            "target_selected": target_selected,
+            "selected_change": target_selected - base_selected,
+        })
+
+    return {
+        "users_on_target_date": users_on_target_date,
+        "users_on_base_date": users_on_base_date,
+        "new_users": new_users,
+        "missing_users": missing_users,
+        "rows": comparable_rows,
+    }
+
+
+def _build_combined_metric_summary(
+    rows: List[Dict],
+    metric: str,
+    display_name: str,
+    base_key: str,
+    target_key: str,
+    change_key: str,
+) -> Dict:
+    changes = [float(row[change_key]) for row in rows]
+    target_values = [float(row[target_key]) for row in rows]
+    base_values = [float(row[base_key]) for row in rows]
+    increased_users = sum(1 for value in changes if value > 0)
+    decreased_users = sum(1 for value in changes if value < 0)
+    unchanged_users = sum(1 for value in changes if value == 0)
+
+    return {
+        "metric": metric,
+        "display_name": display_name,
+        "avg_target": round(sum(target_values) / len(target_values), 4) if target_values else 0.0,
+        "avg_base": round(sum(base_values) / len(base_values), 4) if base_values else 0.0,
+        "avg_change": round(sum(changes) / len(changes), 4) if changes else 0.0,
+        "median_change": round(_median(changes), 4),
+        "max_increase": round(max(changes), 4) if changes else 0.0,
+        "max_decrease": round(min(changes), 4) if changes else 0.0,
+        "increased_users": increased_users,
+        "decreased_users": decreased_users,
+        "unchanged_users": unchanged_users,
+    }
+
+
+def get_combined_analysis(
+    db: Session,
+    countries: List[str] | None = None,
+    genius_levels: List[str] | None = None,
+    exclude_alpha_both_zero: bool = False,
+    exclude_power_pool_both_zero: bool = False,
+    exclude_selected_both_zero: bool = False,
+) -> Dict:
+    payload = _collect_combined_rows(
+        db,
+        countries=countries,
+        genius_levels=genius_levels,
+        exclude_alpha_both_zero=exclude_alpha_both_zero,
+        exclude_power_pool_both_zero=exclude_power_pool_both_zero,
+        exclude_selected_both_zero=exclude_selected_both_zero,
+    )
+    rows = payload["rows"]
+
+    metric_summaries = [
+        _build_combined_metric_summary(
+            rows,
+            "combined_alpha_performance",
+            "Combined Alpha",
+            "base_alpha",
+            "target_alpha",
+            "alpha_change",
+        ),
+        _build_combined_metric_summary(
+            rows,
+            "combined_power_pool_alpha_performance",
+            "Power Pool",
+            "base_power_pool",
+            "target_power_pool",
+            "power_pool_change",
+        ),
+        _build_combined_metric_summary(
+            rows,
+            "combined_selected_alpha_performance",
+            "Selected Alpha",
+            "base_selected",
+            "target_selected",
+            "selected_change",
+        ),
+    ]
+
+    distributions = {
+        "combined_alpha_performance": _build_distribution(
+            [float(row["alpha_change"]) for row in rows],
+            bins=10,
+        ),
+        "combined_power_pool_alpha_performance": _build_distribution(
+            [float(row["power_pool_change"]) for row in rows],
+            bins=10,
+        ),
+        "combined_selected_alpha_performance": _build_distribution(
+            [float(row["selected_change"]) for row in rows],
+            bins=10,
+        ),
+    }
+
+    return {
+        "base_record_date": COMBINED_BASE_DATE.isoformat(),
+        "target_record_date": COMBINED_TARGET_DATE.isoformat(),
+        "summary": {
+            "users_on_target_date": payload["users_on_target_date"],
+            "users_on_base_date": payload["users_on_base_date"],
+            "comparable_users": len(rows),
+            "new_users": payload["new_users"],
+            "missing_users": payload["missing_users"],
+        },
+        "metric_summaries": metric_summaries,
+        "distributions": distributions,
+    }
+
+
+def get_combined_user_changes(
+    db: Session,
+    sort_by: str = "alpha_change",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    countries: List[str] | None = None,
+    genius_levels: List[str] | None = None,
+    exclude_alpha_both_zero: bool = False,
+    exclude_power_pool_both_zero: bool = False,
+    exclude_selected_both_zero: bool = False,
+) -> Dict:
+    payload = _collect_combined_rows(
+        db,
+        countries=countries,
+        genius_levels=genius_levels,
+        exclude_alpha_both_zero=exclude_alpha_both_zero,
+        exclude_power_pool_both_zero=exclude_power_pool_both_zero,
+        exclude_selected_both_zero=exclude_selected_both_zero,
+    )
+    rows = payload["rows"]
+
+    sort_key_map = {
+        "alpha_change": "alpha_change",
+        "power_pool_change": "power_pool_change",
+        "selected_change": "selected_change",
+        "base_alpha": "base_alpha",
+        "target_alpha": "target_alpha",
+        "base_power_pool": "base_power_pool",
+        "target_power_pool": "target_power_pool",
+        "base_selected": "base_selected",
+        "target_selected": "target_selected",
+    }
+    sort_key = sort_key_map.get(sort_by, "alpha_change")
+    reverse = sort_order != "asc"
+    rows.sort(key=lambda item: float(item[sort_key]), reverse=reverse)
+
+    safe_page = max(page, 1)
+    safe_page_size = max(page_size, 1)
+    total = len(rows)
+    start_index = (safe_page - 1) * safe_page_size
+    end_index = start_index + safe_page_size
+    page_items = rows[start_index:end_index]
+
+    return {
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "items": [
+            {
+                "user": item["user"],
+                "country": item["country"],
+                "genius_level": item["genius_level"],
+                "base_alpha": round(float(item["base_alpha"]), 4),
+                "target_alpha": round(float(item["target_alpha"]), 4),
+                "alpha_change": round(float(item["alpha_change"]), 4),
+                "base_power_pool": round(float(item["base_power_pool"]), 4),
+                "target_power_pool": round(float(item["target_power_pool"]), 4),
+                "power_pool_change": round(float(item["power_pool_change"]), 4),
+                "base_selected": round(float(item["base_selected"]), 4),
+                "target_selected": round(float(item["target_selected"]), 4),
+                "selected_change": round(float(item["selected_change"]), 4),
+            }
+            for item in page_items
+        ],
+    }
+
+
+def get_value_factor_analysis(db: Session, exclude_both_half: bool = False) -> Dict:
+    target_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        func.max(LeaderboardConsultantUser.value_factor).label("target_value_factor"),
+        func.max(LeaderboardConsultantUser.country).label("target_country"),
+        func.max(LeaderboardConsultantUser.university).label("target_university"),
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardConsultantUser.user.isnot(None),
+        LeaderboardConsultantUser.value_factor.isnot(None),
+    ).group_by(
+        LeaderboardConsultantUser.user,
+    ).subquery()
+
+    base_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        func.max(LeaderboardConsultantUser.value_factor).label("base_value_factor"),
+        func.max(LeaderboardConsultantUser.country).label("base_country"),
+        func.max(LeaderboardConsultantUser.university).label("base_university"),
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardConsultantUser.user.isnot(None),
+        LeaderboardConsultantUser.value_factor.isnot(None),
+    ).group_by(
+        LeaderboardConsultantUser.user,
+    ).subquery()
+
+    users_subq = db.query(target_subq.c.user.label("user")).union(
+        db.query(base_subq.c.user.label("user"))
+    ).subquery()
+
+    rows = db.query(
+        users_subq.c.user,
+        target_subq.c.target_value_factor,
+        base_subq.c.base_value_factor,
+        func.coalesce(target_subq.c.target_country, base_subq.c.base_country).label("country"),
+        func.coalesce(target_subq.c.target_university, base_subq.c.base_university).label("university"),
+    ).outerjoin(
+        target_subq,
+        users_subq.c.user == target_subq.c.user,
+    ).outerjoin(
+        base_subq,
+        users_subq.c.user == base_subq.c.user,
+    ).all()
+
+    comparable_rows: List[Dict] = []
+    users_on_target_date = 0
+    users_on_base_date = 0
+    new_users = 0
+    missing_users = 0
+
+    for row in rows:
+        target_value = float(row.target_value_factor) if row.target_value_factor is not None else None
+        base_value = float(row.base_value_factor) if row.base_value_factor is not None else None
+        if target_value is not None:
+            users_on_target_date += 1
+        if base_value is not None:
+            users_on_base_date += 1
+
+        if target_value is not None and base_value is None:
+            new_users += 1
+        if target_value is None and base_value is not None:
+            missing_users += 1
+
+        if target_value is None or base_value is None:
+            continue
+
+        # Exclude rows only when both dates are approximately 0.5.
+        if exclude_both_half and abs(base_value - 0.5) < 1e-9 and abs(target_value - 0.5) < 1e-9:
+            continue
+
+        comparable_rows.append({
+            "user": row.user,
+            "country": row.country,
+            "university": row.university,
+            "base_value_factor": base_value,
+            "target_value_factor": target_value,
+            "change": target_value - base_value,
+        })
+
+    changes = [item["change"] for item in comparable_rows]
+    target_values = [item["target_value_factor"] for item in comparable_rows]
+    base_values = [item["base_value_factor"] for item in comparable_rows]
+    increased_users = sum(1 for value in changes if value > 0)
+    decreased_users = sum(1 for value in changes if value < 0)
+    unchanged_users = sum(1 for value in changes if value == 0)
+
+    summary = {
+        "users_on_target_date": users_on_target_date,
+        "users_on_base_date": users_on_base_date,
+        "comparable_users": len(comparable_rows),
+        "new_users": new_users,
+        "missing_users": missing_users,
+        "increased_users": increased_users,
+        "decreased_users": decreased_users,
+        "unchanged_users": unchanged_users,
+        "avg_target_value_factor": round(sum(target_values) / len(target_values), 4) if target_values else 0.0,
+        "avg_base_value_factor": round(sum(base_values) / len(base_values), 4) if base_values else 0.0,
+        "avg_change": round(sum(changes) / len(changes), 4) if changes else 0.0,
+        "median_change": round(_median(changes), 4),
+        "max_increase": round(max(changes), 4) if changes else 0.0,
+        "max_decrease": round(min(changes), 4) if changes else 0.0,
+    }
+
+    sorted_desc = sorted(comparable_rows, key=lambda item: item["change"], reverse=True)
+    sorted_asc = sorted(comparable_rows, key=lambda item: item["change"])
+
+    top_gainers = [
+        {
+            "user": item["user"],
+            "country": item["country"],
+            "university": item["university"],
+            "base_value_factor": round(item["base_value_factor"], 4),
+            "target_value_factor": round(item["target_value_factor"], 4),
+            "change": round(item["change"], 4),
+        }
+        for item in sorted_desc[:20]
+    ]
+    top_decliners = [
+        {
+            "user": item["user"],
+            "country": item["country"],
+            "university": item["university"],
+            "base_value_factor": round(item["base_value_factor"], 4),
+            "target_value_factor": round(item["target_value_factor"], 4),
+            "change": round(item["change"], 4),
+        }
+        for item in sorted_asc[:20]
+    ]
+
+    return {
+        "base_record_date": VALUE_FACTOR_BASE_DATE.isoformat(),
+        "target_record_date": VALUE_FACTOR_TARGET_DATE.isoformat(),
+        "summary": summary,
+        "by_country": _aggregate_value_factor_dimension(comparable_rows, "country", top_n=20),
+        "by_university": _aggregate_value_factor_dimension(comparable_rows, "university", top_n=20),
+        "top_gainers": top_gainers,
+        "top_decliners": top_decliners,
+        "distribution": _build_distribution(changes, bins=10),
+    }
+
+
+def get_user_metric_trends_by_event(db: Session, user: str) -> Dict:
+    events = db.query(
+        EventUpdateRecord.id,
+        EventUpdateRecord.update_content,
+        EventUpdateRecord.update_date,
+        EventUpdateRecord.date_range,
+    ).filter(
+        EventUpdateRecord.update_date.isnot(None),
+        func.lower(EventUpdateRecord.update_content).in_(["value_factor", "combined"]),
+    ).order_by(
+        EventUpdateRecord.update_date.asc(),
+        EventUpdateRecord.id.asc(),
+    ).all()
+
+    value_events_by_date: Dict[date, Dict] = {}
+    combined_events_by_date: Dict[date, Dict] = {}
+    for row in events:
+        content = (row.update_content or "").lower()
+        event_payload = {
+            "update_date": row.update_date,
+            "date_range": row.date_range or row.update_date.isoformat(),
+        }
+        if content == "value_factor":
+            value_events_by_date[row.update_date] = event_payload
+        elif content == "combined":
+            combined_events_by_date[row.update_date] = event_payload
+
+    value_event_dates = sorted(value_events_by_date.keys())
+    combined_event_dates = sorted(combined_events_by_date.keys())
+
+    value_map: Dict[date, float | None] = {}
+    if value_event_dates:
+        value_rows = db.query(
+            LeaderboardConsultantUser.record_date.label("record_date"),
+            func.max(LeaderboardConsultantUser.value_factor).label("value_factor"),
+        ).filter(
+            LeaderboardConsultantUser.delete_flag == False,
+            LeaderboardConsultantUser.user == user,
+            LeaderboardConsultantUser.record_date.in_(value_event_dates),
+        ).group_by(
+            LeaderboardConsultantUser.record_date,
+        ).all()
+        value_map = {
+            row.record_date: float(row.value_factor) if row.value_factor is not None else None
+            for row in value_rows
+        }
+
+    combined_map: Dict[date, Dict[str, float | None]] = {}
+    if combined_event_dates:
+        combined_rows = db.query(
+            LeaderboardGeniusUser.record_date.label("record_date"),
+            func.max(LeaderboardGeniusUser.combined_alpha_performance).label("combined_alpha_performance"),
+            func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label(
+                "combined_power_pool_alpha_performance"
+            ),
+            func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label(
+                "combined_selected_alpha_performance"
+            ),
+        ).filter(
+            LeaderboardGeniusUser.delete_flag == False,
+            LeaderboardGeniusUser.user == user,
+            LeaderboardGeniusUser.record_date.in_(combined_event_dates),
+        ).group_by(
+            LeaderboardGeniusUser.record_date,
+        ).all()
+        combined_map = {
+            row.record_date: {
+                "combined_alpha_performance": float(row.combined_alpha_performance)
+                if row.combined_alpha_performance is not None
+                else None,
+                "combined_power_pool_alpha_performance": float(row.combined_power_pool_alpha_performance)
+                if row.combined_power_pool_alpha_performance is not None
+                else None,
+                "combined_selected_alpha_performance": float(row.combined_selected_alpha_performance)
+                if row.combined_selected_alpha_performance is not None
+                else None,
+            }
+            for row in combined_rows
+        }
+
+    value_factor_trend = [
+        {
+            "update_date": event["update_date"].isoformat(),
+            "date_range": event["date_range"],
+            "value_factor": value_map.get(event["update_date"]),
+        }
+        for event in [value_events_by_date[d] for d in value_event_dates]
+    ]
+
+    combined_trend = [
+        {
+            "update_date": event["update_date"].isoformat(),
+            "date_range": event["date_range"],
+            "combined_alpha_performance": combined_map.get(event["update_date"], {}).get(
+                "combined_alpha_performance"
+            ),
+            "combined_power_pool_alpha_performance": combined_map.get(event["update_date"], {}).get(
+                "combined_power_pool_alpha_performance"
+            ),
+            "combined_selected_alpha_performance": combined_map.get(event["update_date"], {}).get(
+                "combined_selected_alpha_performance"
+            ),
+        }
+        for event in [combined_events_by_date[d] for d in combined_event_dates]
+    ]
+
+    return {
+        "value_factor_trend": value_factor_trend,
+        "combined_trend": combined_trend,
     }

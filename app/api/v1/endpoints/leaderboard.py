@@ -18,6 +18,11 @@ from app.schemas.leaderboard import (
     SummaryStatistics,
     UserWeightTimeSeriesResponse,
     UserWeightData,
+    CombinedAnalysisResponse,
+    CombinedUserChangePageResponse,
+    ValueFactorAnalysisResponse,
+    ValueFactorUserChangePageResponse,
+    UserMetricTrendResponse,
 )
 from app.services import leaderboard_service
 
@@ -313,3 +318,195 @@ async def get_genius_level_weight_changes(
         )
     )
     return [GeniusLevelWeightChangeResponse(**item) for item in results]
+
+
+@router.get("/combined-analysis", response_model=CombinedAnalysisResponse)
+@cache_response("leaderboard:combined-analysis", vary_by_user=False)
+async def get_combined_analysis(
+    request: Request,
+    countries: Optional[str] = Query(
+        None,
+        description="Comma-separated country codes (e.g., 'CN,US,IN')",
+    ),
+    levels: Optional[str] = Query(
+        None,
+        description="Comma-separated genius levels (e.g., 'EXPERT,GOLD')",
+    ),
+    exclude_alpha_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_alpha_performance are both 0",
+    ),
+    exclude_power_pool_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_power_pool_alpha_performance are both 0",
+    ),
+    exclude_selected_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_selected_alpha_performance are both 0",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    country_list = [country.strip() for country in countries.split(",") if country.strip()] if countries else None
+    level_list = [level.strip() for level in levels.split(",") if level.strip()] if levels else None
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_combined_analysis(
+            sync_db,
+            countries=country_list,
+            genius_levels=level_list,
+            exclude_alpha_both_zero=exclude_alpha_both_zero,
+            exclude_power_pool_both_zero=exclude_power_pool_both_zero,
+            exclude_selected_both_zero=exclude_selected_both_zero,
+        )
+    )
+    return CombinedAnalysisResponse(**data)
+
+
+@router.get("/combined-user-changes", response_model=CombinedUserChangePageResponse)
+@cache_response("leaderboard:combined-user-changes", vary_by_user=False)
+async def get_combined_user_changes(
+    request: Request,
+    sort_by: str = Query(
+        "alpha_change",
+        description=(
+            "Sort field: alpha_change|power_pool_change|selected_change|"
+            "base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected"
+        ),
+        regex="^(alpha_change|power_pool_change|selected_change|base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected)$",
+    ),
+    sort_order: str = Query(
+        "desc",
+        description="Sort order: desc | asc",
+        regex="^(desc|asc)$",
+    ),
+    page: int = Query(1, description="Page number", ge=1),
+    page_size: int = Query(20, description="Items per page", ge=1, le=100),
+    countries: Optional[str] = Query(None, description="Comma-separated countries"),
+    levels: Optional[str] = Query(None, description="Comma-separated genius levels"),
+    exclude_alpha_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_alpha_performance are both 0",
+    ),
+    exclude_power_pool_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_power_pool_alpha_performance are both 0",
+    ),
+    exclude_selected_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_selected_alpha_performance are both 0",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    country_list = [country.strip() for country in countries.split(",") if country.strip()] if countries else None
+    level_list = [level.strip() for level in levels.split(",") if level.strip()] if levels else None
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_combined_user_changes(
+            sync_db,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            countries=country_list,
+            genius_levels=level_list,
+            exclude_alpha_both_zero=exclude_alpha_both_zero,
+            exclude_power_pool_both_zero=exclude_power_pool_both_zero,
+            exclude_selected_both_zero=exclude_selected_both_zero,
+        )
+    )
+    return CombinedUserChangePageResponse(**data)
+
+
+@router.get("/value-factor-analysis", response_model=ValueFactorAnalysisResponse)
+@cache_response("leaderboard:value-factor-analysis", vary_by_user=False)
+async def get_value_factor_analysis(
+    request: Request,
+    exclude_both_half: bool = Query(
+        False,
+        description="Exclude rows where base and target value_factor are both 0.5",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_value_factor_analysis(
+            sync_db,
+            exclude_both_half=exclude_both_half,
+        )
+    )
+    return ValueFactorAnalysisResponse(**data)
+
+
+@router.get("/value-factor-user-changes", response_model=ValueFactorUserChangePageResponse)
+@cache_response("leaderboard:value-factor-user-changes", vary_by_user=False)
+async def get_value_factor_user_changes(
+    request: Request,
+    order: Optional[str] = Query(
+        None,
+        description="Deprecated: sort order. Use sort_order instead.",
+        regex="^(desc|asc)$",
+    ),
+    sort_by: str = Query(
+        "change",
+        description="Sort field: change | base_value_factor | target_value_factor",
+        regex="^(change|base_value_factor|target_value_factor)$",
+    ),
+    sort_order: str = Query(
+        "desc",
+        description="Sort order: desc | asc",
+        regex="^(desc|asc)$",
+    ),
+    page: int = Query(1, description="Page number", ge=1),
+    page_size: int = Query(20, description="Items per page", ge=1, le=100),
+    country: Optional[str] = Query(None, description="Deprecated: filter by single country"),
+    countries: Optional[str] = Query(None, description="Comma-separated countries"),
+    genius_levels: Optional[str] = Query(
+        None,
+        description="Comma-separated genius levels (e.g., 'EXPERT,GOLD')",
+    ),
+    exclude_both_half: bool = Query(
+        False,
+        description="Exclude rows where base and target value_factor are both 0.5",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    effective_sort_order = order or sort_order
+    level_list = [level.strip() for level in genius_levels.split(",") if level.strip()] if genius_levels else None
+    country_list = [item.strip() for item in countries.split(",") if item.strip()] if countries else None
+    if not country_list and country:
+        country_list = [country]
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_value_factor_user_changes(
+            sync_db,
+            sort_by=sort_by,
+            sort_order=effective_sort_order,
+            page=page,
+            page_size=page_size,
+            countries=country_list,
+            genius_levels=level_list,
+            exclude_both_half=exclude_both_half,
+        )
+    )
+    return ValueFactorUserChangePageResponse(**data)
+
+
+@router.get("/user-metric-trends", response_model=UserMetricTrendResponse)
+@cache_response("leaderboard:user-metric-trends", vary_by_user=False)
+async def get_user_metric_trends(
+    request: Request,
+    user: str = Query(..., description="WQ ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_user_metric_trends_by_event(
+            sync_db,
+            user=user,
+        )
+    )
+    return UserMetricTrendResponse(
+        user=user,
+        value_factor_trend=data.get("value_factor_trend", []),
+        combined_trend=data.get("combined_trend", []),
+    )
