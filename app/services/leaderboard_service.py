@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, text, and_
+from sqlalchemy import func, desc, asc, text, and_, or_, case
 from app.models.leaderboard import (
     LeaderboardConsultantCountryOrRegion,
     LeaderboardConsultantUser,
@@ -7,7 +7,7 @@ from app.models.leaderboard import (
     LeaderboardGeniusUser,
     EventUpdateRecord,
 )
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import date
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "get_genius_user_weight_changes",
     "get_genius_level_weight_changes",
     "get_user_weight_time_series",
+    "get_user_daily_osmosis_time_series",
     "get_genius_available_countries",
     "get_genius_available_levels",
     "get_available_countries",
@@ -28,6 +29,7 @@ __all__ = [
     "get_value_factor_user_changes",
     "get_combined_analysis",
     "get_combined_user_changes",
+    "get_consultant_merged_page",
     "get_user_metric_trends_by_event",
 ]
 
@@ -976,6 +978,46 @@ def get_user_weight_time_series(
     }
 
 
+def get_user_daily_osmosis_time_series(
+    db: Session,
+    user: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> Dict:
+    from datetime import datetime
+
+    normalized = user.strip().upper() if user else ""
+    if not normalized:
+        return {"user": "", "dates": [], "daily_osmosis_ranks": []}
+
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+    query = db.query(
+        LeaderboardConsultantUser.record_date,
+        LeaderboardConsultantUser.daily_osmosis_rank,
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.user == normalized,
+        LeaderboardConsultantUser.daily_osmosis_rank.isnot(None),
+    )
+
+    if start is not None:
+        query = query.filter(LeaderboardConsultantUser.record_date >= start)
+    if end is not None:
+        query = query.filter(LeaderboardConsultantUser.record_date <= end)
+
+    results = query.order_by(LeaderboardConsultantUser.record_date.asc()).all()
+    dates = [row.record_date.isoformat() for row in results]
+    daily_osmosis_ranks = [float(row.daily_osmosis_rank) for row in results]
+
+    return {
+        "user": normalized,
+        "dates": dates,
+        "daily_osmosis_ranks": daily_osmosis_ranks,
+    }
+
+
 def _median(values: List[float]) -> float:
     if not values:
         return 0.0
@@ -1531,6 +1573,314 @@ def get_combined_user_changes(
             }
             for item in page_items
         ],
+    }
+
+
+def get_consultant_merged_page(
+    db: Session,
+    record_date: Optional[date] = None,
+    countries: Optional[List[str]] = None,
+    genius_levels: Optional[List[str]] = None,
+    user_keyword: Optional[str] = None,
+    sort_by: str = "user",
+    sort_order: str = "asc",
+    page: int = 1,
+    page_size: int = 20,
+) -> Dict:
+    consultant_dates = {
+        row[0]
+        for row in db.query(LeaderboardConsultantUser.record_date).filter(
+            LeaderboardConsultantUser.delete_flag == False,
+            LeaderboardConsultantUser.record_date.isnot(None),
+        ).distinct().all()
+        if row[0] is not None
+    }
+    genius_dates = {
+        row[0]
+        for row in db.query(LeaderboardGeniusUser.record_date).filter(
+            LeaderboardGeniusUser.delete_flag == False,
+            LeaderboardGeniusUser.record_date.isnot(None),
+        ).distinct().all()
+        if row[0] is not None
+    }
+
+    available_dates = sorted(consultant_dates.union(genius_dates), reverse=True)
+    common_dates = sorted(consultant_dates.intersection(genius_dates), reverse=True)
+
+    selected_date = record_date
+    if selected_date is None:
+        if common_dates:
+            selected_date = common_dates[0]
+        elif available_dates:
+            selected_date = available_dates[0]
+
+    if selected_date is None:
+        return {
+            "record_date": None,
+            "available_record_dates": [item.isoformat() for item in available_dates],
+            "summary": {
+                "total_users": 0,
+                "consultant_users": 0,
+                "genius_users": 0,
+                "matched_users": 0,
+                "country_count": 0,
+                "genius_level_count": 0,
+            },
+            "total": 0,
+            "page": 1,
+            "page_size": max(page_size, 1),
+            "items": [],
+        }
+
+    normalized_countries = [country.strip() for country in (countries or []) if country and country.strip()]
+    normalized_levels = [level.strip() for level in (genius_levels or []) if level and level.strip()]
+    normalized_keyword = (user_keyword or "").strip()
+
+    consultant_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        func.max(LeaderboardConsultantUser.country).label("consultant_country"),
+        func.max(LeaderboardConsultantUser.university).label("university"),
+        func.max(LeaderboardConsultantUser.weight_factor).label("weight_factor"),
+        func.max(LeaderboardConsultantUser.value_factor).label("value_factor"),
+        func.max(LeaderboardConsultantUser.daily_osmosis_rank).label("daily_osmosis_rank"),
+        func.max(LeaderboardConsultantUser.data_fields_used).label("data_fields_used"),
+        func.max(LeaderboardConsultantUser.submissions_count).label("submissions_count"),
+        func.max(LeaderboardConsultantUser.mean_prod_correlation).label("mean_prod_correlation"),
+        func.max(LeaderboardConsultantUser.mean_self_correlation).label("mean_self_correlation"),
+        func.max(LeaderboardConsultantUser.super_alpha_submissions_count).label("super_alpha_submissions_count"),
+        func.max(LeaderboardConsultantUser.super_alpha_mean_prod_correlation).label("super_alpha_mean_prod_correlation"),
+        func.max(LeaderboardConsultantUser.super_alpha_mean_self_correlation).label("super_alpha_mean_self_correlation"),
+    ).filter(
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.record_date == selected_date,
+        LeaderboardConsultantUser.user.isnot(None),
+    ).group_by(
+        LeaderboardConsultantUser.user,
+    ).subquery()
+
+    genius_subq = db.query(
+        LeaderboardGeniusUser.user.label("user"),
+        func.max(LeaderboardGeniusUser.country).label("genius_country"),
+        func.max(LeaderboardGeniusUser.rank).label("genius_rank"),
+        func.max(LeaderboardGeniusUser.genius_level).label("genius_level"),
+        func.max(LeaderboardGeniusUser.best_level).label("best_level"),
+        func.max(LeaderboardGeniusUser.alpha_count).label("alpha_count"),
+        func.max(LeaderboardGeniusUser.pyramid_count).label("pyramid_count"),
+        func.max(LeaderboardGeniusUser.combined_alpha_performance).label("combined_alpha_performance"),
+        func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label(
+            "combined_power_pool_alpha_performance"
+        ),
+        func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label(
+            "combined_selected_alpha_performance"
+        ),
+        func.max(LeaderboardGeniusUser.operator_count).label("operator_count"),
+        func.max(LeaderboardGeniusUser.operator_avg).label("operator_avg"),
+        func.max(LeaderboardGeniusUser.field_count).label("field_count"),
+        func.max(LeaderboardGeniusUser.field_avg).label("field_avg"),
+        func.max(LeaderboardGeniusUser.community_activity).label("community_activity"),
+        func.max(LeaderboardGeniusUser.max_simulation_streak).label("max_simulation_streak"),
+    ).filter(
+        LeaderboardGeniusUser.delete_flag == False,
+        LeaderboardGeniusUser.record_date == selected_date,
+        LeaderboardGeniusUser.user.isnot(None),
+    ).group_by(
+        LeaderboardGeniusUser.user,
+    ).subquery()
+
+    users_subq = db.query(consultant_subq.c.user.label("user")).union(
+        db.query(genius_subq.c.user.label("user"))
+    ).subquery()
+
+    country_expr = func.coalesce(consultant_subq.c.consultant_country, genius_subq.c.genius_country)
+    merged_query = db.query(
+        users_subq.c.user.label("user"),
+        country_expr.label("country"),
+        consultant_subq.c.consultant_country,
+        genius_subq.c.genius_country,
+        consultant_subq.c.university,
+        consultant_subq.c.weight_factor,
+        consultant_subq.c.value_factor,
+        consultant_subq.c.daily_osmosis_rank,
+        consultant_subq.c.data_fields_used,
+        consultant_subq.c.submissions_count,
+        consultant_subq.c.mean_prod_correlation,
+        consultant_subq.c.mean_self_correlation,
+        consultant_subq.c.super_alpha_submissions_count,
+        consultant_subq.c.super_alpha_mean_prod_correlation,
+        consultant_subq.c.super_alpha_mean_self_correlation,
+        genius_subq.c.genius_rank,
+        genius_subq.c.genius_level,
+        genius_subq.c.best_level,
+        genius_subq.c.alpha_count,
+        genius_subq.c.pyramid_count,
+        genius_subq.c.combined_alpha_performance,
+        genius_subq.c.combined_power_pool_alpha_performance,
+        genius_subq.c.combined_selected_alpha_performance,
+        genius_subq.c.operator_count,
+        genius_subq.c.operator_avg,
+        genius_subq.c.field_count,
+        genius_subq.c.field_avg,
+        genius_subq.c.community_activity,
+        genius_subq.c.max_simulation_streak,
+        consultant_subq.c.user.isnot(None).label("has_consultant_record"),
+        genius_subq.c.user.isnot(None).label("has_genius_record"),
+    ).outerjoin(
+        consultant_subq,
+        users_subq.c.user == consultant_subq.c.user,
+    ).outerjoin(
+        genius_subq,
+        users_subq.c.user == genius_subq.c.user,
+    )
+
+    if normalized_countries:
+        merged_query = merged_query.filter(country_expr.in_(normalized_countries))
+    if normalized_levels:
+        merged_query = merged_query.filter(genius_subq.c.genius_level.in_(normalized_levels))
+    if normalized_keyword:
+        merged_query = merged_query.filter(users_subq.c.user.like(f"%{normalized_keyword}%"))
+
+    summary_subq = merged_query.subquery()
+    summary_row = db.query(
+        func.count(summary_subq.c.user).label("total_users"),
+        func.sum(case((summary_subq.c.has_consultant_record == True, 1), else_=0)).label("consultant_users"),
+        func.sum(case((summary_subq.c.has_genius_record == True, 1), else_=0)).label("genius_users"),
+        func.sum(
+            case(
+                (
+                    and_(
+                        summary_subq.c.has_consultant_record == True,
+                        summary_subq.c.has_genius_record == True,
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ).label("matched_users"),
+        func.count(func.distinct(summary_subq.c.country)).label("country_count"),
+        func.count(func.distinct(summary_subq.c.genius_level)).label("genius_level_count"),
+    ).one()
+
+    sort_key_map = {
+        "user": users_subq.c.user,
+        "country": country_expr,
+        "university": consultant_subq.c.university,
+        "genius_level": genius_subq.c.genius_level,
+        "best_level": genius_subq.c.best_level,
+        "weight_factor": consultant_subq.c.weight_factor,
+        "value_factor": consultant_subq.c.value_factor,
+        "daily_osmosis_rank": consultant_subq.c.daily_osmosis_rank,
+        "data_fields_used": consultant_subq.c.data_fields_used,
+        "submissions_count": consultant_subq.c.submissions_count,
+        "mean_prod_correlation": consultant_subq.c.mean_prod_correlation,
+        "mean_self_correlation": consultant_subq.c.mean_self_correlation,
+        "super_alpha_submissions_count": consultant_subq.c.super_alpha_submissions_count,
+        "super_alpha_mean_prod_correlation": consultant_subq.c.super_alpha_mean_prod_correlation,
+        "super_alpha_mean_self_correlation": consultant_subq.c.super_alpha_mean_self_correlation,
+        "alpha_count": genius_subq.c.alpha_count,
+        "pyramid_count": genius_subq.c.pyramid_count,
+        "combined_alpha_performance": genius_subq.c.combined_alpha_performance,
+        "combined_power_pool_alpha_performance": genius_subq.c.combined_power_pool_alpha_performance,
+        "combined_selected_alpha_performance": genius_subq.c.combined_selected_alpha_performance,
+        "operator_count": genius_subq.c.operator_count,
+        "operator_avg": genius_subq.c.operator_avg,
+        "field_count": genius_subq.c.field_count,
+        "field_avg": genius_subq.c.field_avg,
+        "community_activity": genius_subq.c.community_activity,
+        "max_simulation_streak": genius_subq.c.max_simulation_streak,
+        "record_coverage": case(
+            (
+                and_(
+                    consultant_subq.c.user.isnot(None),
+                    genius_subq.c.user.isnot(None),
+                ),
+                2,
+            ),
+            (
+                or_(
+                    consultant_subq.c.user.isnot(None),
+                    genius_subq.c.user.isnot(None),
+                ),
+                1,
+            ),
+            else_=0,
+        ),
+    }
+
+    sort_expr = sort_key_map.get(sort_by, users_subq.c.user)
+    if sort_order == "desc":
+        merged_query = merged_query.order_by(desc(sort_expr), asc(users_subq.c.user))
+    else:
+        merged_query = merged_query.order_by(asc(sort_expr), asc(users_subq.c.user))
+
+    safe_page = max(page, 1)
+    safe_page_size = max(page_size, 1)
+    total = int(summary_row.total_users or 0)
+    start_index = (safe_page - 1) * safe_page_size
+
+    rows = merged_query.offset(start_index).limit(safe_page_size).all()
+
+    def _round_or_none(value, digits: int = 4):
+        if value is None:
+            return None
+        return round(float(value), digits)
+
+    def _int_or_none(value):
+        if value is None:
+            return None
+        return int(value)
+
+    items = [
+        {
+            "user": row.user,
+            "country": row.country,
+            "consultant_country": row.consultant_country,
+            "genius_country": row.genius_country,
+            "university": row.university,
+            "has_consultant_record": bool(row.has_consultant_record),
+            "has_genius_record": bool(row.has_genius_record),
+            "weight_factor": _round_or_none(row.weight_factor),
+            "value_factor": _round_or_none(row.value_factor),
+            "daily_osmosis_rank": _round_or_none(row.daily_osmosis_rank),
+            "data_fields_used": _int_or_none(row.data_fields_used),
+            "submissions_count": _int_or_none(row.submissions_count),
+            "mean_prod_correlation": _round_or_none(row.mean_prod_correlation),
+            "mean_self_correlation": _round_or_none(row.mean_self_correlation),
+            "super_alpha_submissions_count": _int_or_none(row.super_alpha_submissions_count),
+            "super_alpha_mean_prod_correlation": _round_or_none(row.super_alpha_mean_prod_correlation),
+            "super_alpha_mean_self_correlation": _round_or_none(row.super_alpha_mean_self_correlation),
+            "genius_rank": _int_or_none(row.genius_rank),
+            "genius_level": row.genius_level,
+            "best_level": row.best_level,
+            "alpha_count": _int_or_none(row.alpha_count),
+            "pyramid_count": _int_or_none(row.pyramid_count),
+            "combined_alpha_performance": _round_or_none(row.combined_alpha_performance),
+            "combined_power_pool_alpha_performance": _round_or_none(row.combined_power_pool_alpha_performance),
+            "combined_selected_alpha_performance": _round_or_none(row.combined_selected_alpha_performance),
+            "operator_count": _int_or_none(row.operator_count),
+            "operator_avg": _round_or_none(row.operator_avg),
+            "field_count": _int_or_none(row.field_count),
+            "field_avg": _round_or_none(row.field_avg),
+            "community_activity": _round_or_none(row.community_activity),
+            "max_simulation_streak": _int_or_none(row.max_simulation_streak),
+        }
+        for row in rows
+    ]
+
+    return {
+        "record_date": selected_date.isoformat(),
+        "available_record_dates": [item.isoformat() for item in available_dates],
+        "summary": {
+            "total_users": total,
+            "consultant_users": int(summary_row.consultant_users or 0),
+            "genius_users": int(summary_row.genius_users or 0),
+            "matched_users": int(summary_row.matched_users or 0),
+            "country_count": int(summary_row.country_count or 0),
+            "genius_level_count": int(summary_row.genius_level_count or 0),
+        },
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "items": items,
     }
 
 

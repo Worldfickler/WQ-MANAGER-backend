@@ -63,6 +63,7 @@ class LeaderboardConsultantUser(Base):
     user = Column(String(16), nullable=False)
     weight_factor = Column(Double, nullable=True)
     value_factor = Column(Double, nullable=True)
+    daily_osmosis_rank = Column(Double, nullable=True)
     data_fields_used = Column(Integer, nullable=True)
     submissions_count = Column(Integer, nullable=True)
     mean_prod_correlation = Column(Double, nullable=True)

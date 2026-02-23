@@ -19,7 +19,6 @@ __all__ = [
     "get_user_metric_trends_by_event",
 ]
 
-
 async def get_user_history(
     db: AsyncSession,
     wq_id: str,

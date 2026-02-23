@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -17,9 +18,11 @@ from app.schemas.leaderboard import (
     GeniusLevelWeightChangeResponse,
     SummaryStatistics,
     UserWeightTimeSeriesResponse,
+    UserDailyOsmosisTimeSeriesResponse,
     UserWeightData,
     CombinedAnalysisResponse,
     CombinedUserChangePageResponse,
+    ConsultantMergedPageResponse,
     ValueFactorAnalysisResponse,
     ValueFactorUserChangePageResponse,
     UserMetricTrendResponse,
@@ -303,6 +306,27 @@ async def get_genius_user_weight_timeseries(
     return UserWeightTimeSeriesResponse(**data)
 
 
+@router.get("/consultant-user-daily-osmosis-timeseries", response_model=UserDailyOsmosisTimeSeriesResponse)
+@cache_response("leaderboard:consultant-user-daily-osmosis-timeseries", vary_by_user=False)
+async def get_consultant_user_daily_osmosis_timeseries(
+    request: Request,
+    user: str = Query(..., description="User ID (WQ_ID)"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_user_daily_osmosis_time_series(
+            db=sync_db,
+            user=user,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    )
+    return UserDailyOsmosisTimeSeriesResponse(**data)
+
+
 @router.get("/genius-level-weight-changes", response_model=List[GeniusLevelWeightChangeResponse])
 @cache_response("leaderboard:genius-level-weight-changes", vary_by_user=False)
 async def get_genius_level_weight_changes(
@@ -415,6 +439,64 @@ async def get_combined_user_changes(
         )
     )
     return CombinedUserChangePageResponse(**data)
+
+
+@router.get("/consultant-merged-page", response_model=ConsultantMergedPageResponse)
+@cache_response("leaderboard:consultant-merged-page", vary_by_user=False)
+async def get_consultant_merged_page(
+    request: Request,
+    record_date: Optional[str] = Query(None, description="Record date (YYYY-MM-DD)"),
+    countries: Optional[str] = Query(None, description="Comma-separated countries"),
+    levels: Optional[str] = Query(None, description="Comma-separated genius levels"),
+    user_keyword: Optional[str] = Query(None, description="Search by user id"),
+    sort_by: str = Query(
+        "user",
+        description=(
+            "Sort field: user|country|university|genius_level|best_level|"
+            "weight_factor|value_factor|daily_osmosis_rank|data_fields_used|submissions_count|"
+            "mean_prod_correlation|mean_self_correlation|super_alpha_submissions_count|"
+            "super_alpha_mean_prod_correlation|super_alpha_mean_self_correlation|"
+            "alpha_count|pyramid_count|combined_alpha_performance|"
+            "combined_power_pool_alpha_performance|combined_selected_alpha_performance|"
+            "operator_count|operator_avg|field_count|field_avg|community_activity|"
+            "max_simulation_streak|record_coverage"
+        ),
+        regex="^(user|country|university|genius_level|best_level|weight_factor|value_factor|daily_osmosis_rank|data_fields_used|submissions_count|mean_prod_correlation|mean_self_correlation|super_alpha_submissions_count|super_alpha_mean_prod_correlation|super_alpha_mean_self_correlation|alpha_count|pyramid_count|combined_alpha_performance|combined_power_pool_alpha_performance|combined_selected_alpha_performance|operator_count|operator_avg|field_count|field_avg|community_activity|max_simulation_streak|record_coverage)$",
+    ),
+    sort_order: str = Query(
+        "asc",
+        description="Sort order: desc | asc",
+        regex="^(desc|asc)$",
+    ),
+    page: int = Query(1, description="Page number", ge=1),
+    page_size: int = Query(20, description="Items per page", ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    parsed_date = None
+    if record_date:
+        try:
+            parsed_date = datetime.strptime(record_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="record_date must be in YYYY-MM-DD format")
+
+    country_list = [country.strip() for country in countries.split(",") if country.strip()] if countries else None
+    level_list = [level.strip() for level in levels.split(",") if level.strip()] if levels else None
+
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_consultant_merged_page(
+            sync_db,
+            record_date=parsed_date,
+            countries=country_list,
+            genius_levels=level_list,
+            user_keyword=user_keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+    )
+    return ConsultantMergedPageResponse(**data)
 
 
 @router.get("/value-factor-analysis", response_model=ValueFactorAnalysisResponse)

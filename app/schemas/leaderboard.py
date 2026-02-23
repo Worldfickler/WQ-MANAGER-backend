@@ -74,6 +74,12 @@ class UserWeightTimeSeriesResponse(BaseModel):
     weights: list[float]
 
 
+class UserDailyOsmosisTimeSeriesResponse(BaseModel):
+    user: str
+    dates: list[str]
+    daily_osmosis_ranks: list[float]
+
+
 class GeniusLevelWeightChangeResponse(BaseModel):
     genius_level: str
     total_users: int
@@ -213,6 +219,62 @@ class CombinedUserChangePageResponse(BaseModel):
     page: int
     page_size: int
     items: list[CombinedUserChangeItem]
+
+
+class ConsultantMergedSummary(BaseModel):
+    total_users: int
+    consultant_users: int
+    genius_users: int
+    matched_users: int
+    country_count: int
+    genius_level_count: int
+
+
+class ConsultantMergedRow(BaseModel):
+    user: str
+    country: Optional[str] = None
+    consultant_country: Optional[str] = None
+    genius_country: Optional[str] = None
+    university: Optional[str] = None
+
+    has_consultant_record: bool
+    has_genius_record: bool
+
+    weight_factor: Optional[float] = None
+    value_factor: Optional[float] = None
+    daily_osmosis_rank: Optional[float] = None
+    data_fields_used: Optional[int] = None
+    submissions_count: Optional[int] = None
+    mean_prod_correlation: Optional[float] = None
+    mean_self_correlation: Optional[float] = None
+    super_alpha_submissions_count: Optional[int] = None
+    super_alpha_mean_prod_correlation: Optional[float] = None
+    super_alpha_mean_self_correlation: Optional[float] = None
+
+    genius_rank: Optional[int] = None
+    genius_level: Optional[str] = None
+    best_level: Optional[str] = None
+    alpha_count: Optional[int] = None
+    pyramid_count: Optional[int] = None
+    combined_alpha_performance: Optional[float] = None
+    combined_power_pool_alpha_performance: Optional[float] = None
+    combined_selected_alpha_performance: Optional[float] = None
+    operator_count: Optional[int] = None
+    operator_avg: Optional[float] = None
+    field_count: Optional[int] = None
+    field_avg: Optional[float] = None
+    community_activity: Optional[float] = None
+    max_simulation_streak: Optional[int] = None
+
+
+class ConsultantMergedPageResponse(BaseModel):
+    record_date: Optional[str] = None
+    available_record_dates: list[str]
+    summary: ConsultantMergedSummary
+    total: int
+    page: int
+    page_size: int
+    items: list[ConsultantMergedRow]
 
 
 class ValueFactorTrendPoint(BaseModel):

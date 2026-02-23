@@ -14,7 +14,7 @@ router = APIRouter()
 @cache_response("user:profile-history")
 async def get_user_history(
     request: Request,
-    limit_days: int = Query(30, description="Days to look back", ge=1, le=365),
+    limit_days: int = Query(3650, description="Days to look back", ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
     current_user: SystemUser = Depends(get_current_user),
 ):
@@ -38,6 +38,7 @@ async def get_user_history(
             "record_date": record.record_date.isoformat() if record.record_date else None,
             "weight_factor": record.weight_factor,
             "value_factor": record.value_factor,
+            "daily_osmosis_rank": record.daily_osmosis_rank,
             "combined_alpha_performance": None,
             "combined_power_pool_alpha_performance": None,
             "combined_selected_alpha_performance": None,
