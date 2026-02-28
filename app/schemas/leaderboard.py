@@ -80,6 +80,33 @@ class UserDailyOsmosisTimeSeriesResponse(BaseModel):
     daily_osmosis_ranks: list[float]
 
 
+class OsmosisSummary(BaseModel):
+    total_users: int
+    total_records: int
+    avg_osmosis_rank: Optional[float] = None
+    min_record_date: Optional[str] = None
+    max_record_date: Optional[str] = None
+
+
+class OsmosisDailyRecordItem(BaseModel):
+    user: str
+    country: Optional[str] = None
+    avg_osmosis_rank: float
+    days_with_data: int
+    above_avg_days: int
+    below_avg_days: int
+    max_osmosis_rank: float
+    min_osmosis_rank: float
+
+
+class OsmosisPageResponse(BaseModel):
+    summary: OsmosisSummary
+    total: int
+    page: int
+    page_size: int
+    items: list[OsmosisDailyRecordItem]
+
+
 class GeniusLevelWeightChangeResponse(BaseModel):
     genius_level: str
     total_users: int

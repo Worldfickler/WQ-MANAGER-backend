@@ -19,6 +19,7 @@ __all__ = [
     "get_genius_level_weight_changes",
     "get_user_weight_time_series",
     "get_user_daily_osmosis_time_series",
+    "get_osmosis_page",
     "get_genius_available_countries",
     "get_genius_available_levels",
     "get_available_countries",
@@ -1015,6 +1016,153 @@ def get_user_daily_osmosis_time_series(
         "user": normalized,
         "dates": dates,
         "daily_osmosis_ranks": daily_osmosis_ranks,
+    }
+
+
+def get_osmosis_page(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    countries: Optional[List[str]] = None,
+    user_keyword: Optional[str] = None,
+    sort_by: str = "avg_osmosis_rank",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+) -> Dict:
+    base_filters = [
+        LeaderboardConsultantUser.delete_flag == False,
+        LeaderboardConsultantUser.user.isnot(None),
+        LeaderboardConsultantUser.daily_osmosis_rank.isnot(None),
+        LeaderboardConsultantUser.daily_osmosis_rank != 0,
+    ]
+    if start_date is not None:
+        base_filters.append(LeaderboardConsultantUser.record_date >= start_date)
+    if end_date is not None:
+        base_filters.append(LeaderboardConsultantUser.record_date <= end_date)
+
+    normalized_keyword = (user_keyword or "").strip()
+    if normalized_keyword:
+        base_filters.append(LeaderboardConsultantUser.user.like(f"%{normalized_keyword}%"))
+    normalized_countries = [item.strip() for item in (countries or []) if item and item.strip()]
+    if normalized_countries:
+        base_filters.append(LeaderboardConsultantUser.country.in_(normalized_countries))
+
+    daily_subq = db.query(
+        LeaderboardConsultantUser.user.label("user"),
+        LeaderboardConsultantUser.country.label("country"),
+        LeaderboardConsultantUser.record_date.label("record_date"),
+        LeaderboardConsultantUser.daily_osmosis_rank.label("daily_osmosis_rank"),
+    ).filter(*base_filters).subquery()
+
+    user_avg_subq = db.query(
+        daily_subq.c.user.label("user"),
+        func.max(daily_subq.c.country).label("country"),
+        func.avg(daily_subq.c.daily_osmosis_rank).label("avg_osmosis_rank"),
+        func.count(daily_subq.c.daily_osmosis_rank).label("days_with_data"),
+        func.max(daily_subq.c.daily_osmosis_rank).label("max_osmosis_rank"),
+        func.min(daily_subq.c.daily_osmosis_rank).label("min_osmosis_rank"),
+    ).group_by(
+        daily_subq.c.user
+    ).subquery()
+
+    user_compare_subq = db.query(
+        daily_subq.c.user.label("user"),
+        func.sum(
+            case(
+                (daily_subq.c.daily_osmosis_rank > user_avg_subq.c.avg_osmosis_rank, 1),
+                else_=0,
+            )
+        ).label("above_avg_days"),
+        func.sum(
+            case(
+                (daily_subq.c.daily_osmosis_rank < user_avg_subq.c.avg_osmosis_rank, 1),
+                else_=0,
+            )
+        ).label("below_avg_days"),
+    ).join(
+        user_avg_subq,
+        daily_subq.c.user == user_avg_subq.c.user,
+    ).group_by(
+        daily_subq.c.user
+    ).subquery()
+
+    summary_row = db.query(
+        func.count(func.distinct(daily_subq.c.user)).label("total_users"),
+        func.count(daily_subq.c.user).label("total_records"),
+        func.avg(daily_subq.c.daily_osmosis_rank).label("avg_osmosis_rank"),
+        func.min(daily_subq.c.record_date).label("min_record_date"),
+        func.max(daily_subq.c.record_date).label("max_record_date"),
+    ).one()
+
+    merged_query = db.query(
+        user_avg_subq.c.user,
+        user_avg_subq.c.country,
+        user_avg_subq.c.avg_osmosis_rank,
+        user_avg_subq.c.days_with_data,
+        user_compare_subq.c.above_avg_days,
+        user_compare_subq.c.below_avg_days,
+        user_avg_subq.c.max_osmosis_rank,
+        user_avg_subq.c.min_osmosis_rank,
+    ).join(
+        user_compare_subq,
+        user_avg_subq.c.user == user_compare_subq.c.user,
+    )
+
+    sort_key_map = {
+        "user": user_avg_subq.c.user,
+        "country": user_avg_subq.c.country,
+        "avg_osmosis_rank": user_avg_subq.c.avg_osmosis_rank,
+        "days_with_data": user_avg_subq.c.days_with_data,
+        "above_avg_days": user_compare_subq.c.above_avg_days,
+        "below_avg_days": user_compare_subq.c.below_avg_days,
+        "max_osmosis_rank": user_avg_subq.c.max_osmosis_rank,
+        "min_osmosis_rank": user_avg_subq.c.min_osmosis_rank,
+    }
+    sort_expr = sort_key_map.get(sort_by, user_avg_subq.c.avg_osmosis_rank)
+
+    if sort_order == "asc":
+        merged_query = merged_query.order_by(asc(sort_expr), asc(user_avg_subq.c.user))
+    else:
+        merged_query = merged_query.order_by(desc(sort_expr), asc(user_avg_subq.c.user))
+
+    safe_page = max(page, 1)
+    safe_page_size = max(page_size, 1)
+    total = int(summary_row.total_users or 0)
+    start_index = (safe_page - 1) * safe_page_size
+    rows = merged_query.offset(start_index).limit(safe_page_size).all()
+
+    def _float_or_none(value, digits: int = 6):
+        if value is None:
+            return None
+        return round(float(value), digits)
+
+    items = [
+        {
+            "user": row.user,
+            "country": row.country,
+            "avg_osmosis_rank": float(row.avg_osmosis_rank),
+            "days_with_data": int(row.days_with_data or 0),
+            "above_avg_days": int(row.above_avg_days or 0),
+            "below_avg_days": int(row.below_avg_days or 0),
+            "max_osmosis_rank": float(row.max_osmosis_rank),
+            "min_osmosis_rank": float(row.min_osmosis_rank),
+        }
+        for row in rows
+    ]
+
+    return {
+        "summary": {
+            "total_users": int(summary_row.total_users or 0),
+            "total_records": int(summary_row.total_records or 0),
+            "avg_osmosis_rank": _float_or_none(summary_row.avg_osmosis_rank),
+            "min_record_date": summary_row.min_record_date.isoformat() if summary_row.min_record_date else None,
+            "max_record_date": summary_row.max_record_date.isoformat() if summary_row.max_record_date else None,
+        },
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "items": items,
     }
 
 

@@ -19,6 +19,7 @@ from app.schemas.leaderboard import (
     SummaryStatistics,
     UserWeightTimeSeriesResponse,
     UserDailyOsmosisTimeSeriesResponse,
+    OsmosisPageResponse,
     UserWeightData,
     CombinedAnalysisResponse,
     CombinedUserChangePageResponse,
@@ -325,6 +326,62 @@ async def get_consultant_user_daily_osmosis_timeseries(
         )
     )
     return UserDailyOsmosisTimeSeriesResponse(**data)
+
+
+@router.get("/osmosis-page", response_model=OsmosisPageResponse)
+@cache_response("leaderboard:osmosis-page", vary_by_user=False)
+async def get_osmosis_page(
+    request: Request,
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    countries: Optional[str] = Query(None, description="Comma-separated countries"),
+    user_keyword: Optional[str] = Query(None, description="Search by user id"),
+    sort_by: str = Query(
+        "avg_osmosis_rank",
+        description="Sort field: user|country|avg_osmosis_rank|days_with_data|above_avg_days|below_avg_days|max_osmosis_rank|min_osmosis_rank",
+        regex="^(user|country|avg_osmosis_rank|days_with_data|above_avg_days|below_avg_days|max_osmosis_rank|min_osmosis_rank)$",
+    ),
+    sort_order: str = Query(
+        "desc",
+        description="Sort order: desc | asc",
+        regex="^(desc|asc)$",
+    ),
+    page: int = Query(1, description="Page number", ge=1),
+    page_size: int = Query(50, description="Items per page", ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    parsed_start_date = None
+    parsed_end_date = None
+    if start_date:
+        try:
+            parsed_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date must be in YYYY-MM-DD format")
+    if end_date:
+        try:
+            parsed_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_date must be in YYYY-MM-DD format")
+
+    if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        raise HTTPException(status_code=400, detail="start_date must be earlier than or equal to end_date")
+
+    country_list = [item.strip() for item in countries.split(",") if item.strip()] if countries else None
+    data = await db.run_sync(
+        lambda sync_db: leaderboard_service.get_osmosis_page(
+            sync_db,
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+            countries=country_list,
+            user_keyword=user_keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+    )
+    return OsmosisPageResponse(**data)
 
 
 @router.get("/genius-level-weight-changes", response_model=List[GeniusLevelWeightChangeResponse])
