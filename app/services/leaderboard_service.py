@@ -1024,6 +1024,7 @@ def get_osmosis_page(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     countries: Optional[List[str]] = None,
+    deduplicate_mon_wed: bool = False,
     user_keyword: Optional[str] = None,
     sort_by: str = "avg_osmosis_rank",
     sort_order: str = "desc",
@@ -1054,6 +1055,130 @@ def get_osmosis_page(
         LeaderboardConsultantUser.record_date.label("record_date"),
         LeaderboardConsultantUser.daily_osmosis_rank.label("daily_osmosis_rank"),
     ).filter(*base_filters).subquery()
+
+    if deduplicate_mon_wed:
+        raw_rows = db.query(
+            daily_subq.c.user,
+            daily_subq.c.country,
+            daily_subq.c.record_date,
+            daily_subq.c.daily_osmosis_rank,
+        ).order_by(
+            asc(daily_subq.c.user),
+            asc(daily_subq.c.record_date),
+        ).all()
+
+        dedup_rows: List[Dict] = []
+        mon_wed_seen: set[tuple[str, int, int]] = set()
+        for row in raw_rows:
+            if row.record_date is None or row.daily_osmosis_rank is None:
+                continue
+            iso_year, iso_week, iso_weekday = row.record_date.isocalendar()
+            if 1 <= iso_weekday <= 3:
+                dedup_key = (row.user, iso_year, iso_week)
+                if dedup_key in mon_wed_seen:
+                    continue
+                mon_wed_seen.add(dedup_key)
+            dedup_rows.append(
+                {
+                    "user": row.user,
+                    "country": row.country,
+                    "record_date": row.record_date,
+                    "daily_osmosis_rank": float(row.daily_osmosis_rank),
+                }
+            )
+
+        grouped: Dict[str, Dict] = {}
+        all_values: List[float] = []
+        min_record_date: Optional[date] = None
+        max_record_date: Optional[date] = None
+        for row in dedup_rows:
+            user = row["user"]
+            if user not in grouped:
+                grouped[user] = {
+                    "user": user,
+                    "country": row.get("country"),
+                    "values": [],
+                }
+            if not grouped[user].get("country") and row.get("country"):
+                grouped[user]["country"] = row.get("country")
+            value = float(row["daily_osmosis_rank"])
+            grouped[user]["values"].append(value)
+            all_values.append(value)
+            record_day = row["record_date"]
+            if min_record_date is None or record_day < min_record_date:
+                min_record_date = record_day
+            if max_record_date is None or record_day > max_record_date:
+                max_record_date = record_day
+
+        aggregated_items: List[Dict] = []
+        for item in grouped.values():
+            values = item["values"]
+            if not values:
+                continue
+            avg_value = sum(values) / len(values)
+            aggregated_items.append(
+                {
+                    "user": item["user"],
+                    "country": item.get("country"),
+                    "avg_osmosis_rank": avg_value,
+                    "days_with_data": len(values),
+                    "above_avg_days": sum(1 for value in values if value > avg_value),
+                    "below_avg_days": sum(1 for value in values if value < avg_value),
+                    "max_osmosis_rank": max(values),
+                    "min_osmosis_rank": min(values),
+                }
+            )
+
+        sort_key_map = {
+            "user": lambda x: (x.get("user") or ""),
+            "country": lambda x: (x.get("country") or ""),
+            "avg_osmosis_rank": lambda x: x.get("avg_osmosis_rank") or 0,
+            "days_with_data": lambda x: x.get("days_with_data") or 0,
+            "above_avg_days": lambda x: x.get("above_avg_days") or 0,
+            "below_avg_days": lambda x: x.get("below_avg_days") or 0,
+            "max_osmosis_rank": lambda x: x.get("max_osmosis_rank") or 0,
+            "min_osmosis_rank": lambda x: x.get("min_osmosis_rank") or 0,
+        }
+        key_func = sort_key_map.get(sort_by, sort_key_map["avg_osmosis_rank"])
+        reverse = sort_order != "asc"
+        aggregated_items.sort(key=lambda item: (key_func(item), item.get("user") or ""), reverse=reverse)
+
+        safe_page = max(page, 1)
+        safe_page_size = max(page_size, 1)
+        total = len(aggregated_items)
+        start_index = (safe_page - 1) * safe_page_size
+        page_items = aggregated_items[start_index:start_index + safe_page_size]
+
+        def _float_or_none(value, digits: int = 6):
+            if value is None:
+                return None
+            return round(float(value), digits)
+
+        return {
+            "summary": {
+                "total_users": len(grouped),
+                "total_records": len(dedup_rows),
+                "avg_osmosis_rank": _float_or_none(sum(all_values) / len(all_values)) if all_values else None,
+                "min_record_date": min_record_date.isoformat() if min_record_date else None,
+                "max_record_date": max_record_date.isoformat() if max_record_date else None,
+            },
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "items": [
+                {
+                    "user": item["user"],
+                    "country": item.get("country"),
+                    "avg_osmosis_rank": float(item["avg_osmosis_rank"]),
+                    "days_with_data": int(item["days_with_data"]),
+                    "above_avg_days": int(item["above_avg_days"]),
+                    "below_avg_days": int(item["below_avg_days"]),
+                    "max_osmosis_rank": float(item["max_osmosis_rank"]),
+                    "min_osmosis_rank": float(item["min_osmosis_rank"]),
+                }
+                for item in page_items
+            ],
+        }
 
     user_avg_subq = db.query(
         daily_subq.c.user.label("user"),

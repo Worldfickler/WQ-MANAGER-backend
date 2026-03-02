@@ -335,6 +335,7 @@ async def get_osmosis_page(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     countries: Optional[str] = Query(None, description="Comma-separated countries"),
+    deduplicate_mon_wed: bool = Query(False, description="Treat duplicated Mon-Wed records as one day"),
     user_keyword: Optional[str] = Query(None, description="Search by user id"),
     sort_by: str = Query(
         "avg_osmosis_rank",
@@ -374,6 +375,7 @@ async def get_osmosis_page(
             start_date=parsed_start_date,
             end_date=parsed_end_date,
             countries=country_list,
+            deduplicate_mon_wed=deduplicate_mon_wed,
             user_keyword=user_keyword,
             sort_by=sort_by,
             sort_order=sort_order,
