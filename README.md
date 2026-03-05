@@ -104,5 +104,20 @@ CACHE_TIMEZONE=Asia/Shanghai
 - Profile
 ![Profile](picture/profile.png)
 
+- Value Factory
+![Value Factory](picture/value.png)
+
+- Combined
+![Combined](picture/combined.png)
+
+- Osmosis
+![Osmosis](picture/osmosis.png)
+
+- Consultant
+![Consultant](picture/consultant.png)
+
+- Feedback
+![Feedback](picture/feedback.png)
+
 - Notice
 ![Notice](picture/notice.png)
