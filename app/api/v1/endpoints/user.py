@@ -42,6 +42,7 @@ async def get_user_history(
             "combined_alpha_performance": None,
             "combined_power_pool_alpha_performance": None,
             "combined_selected_alpha_performance": None,
+            "combined_osmosis_performance": None,
             "submissions_count": record.submissions_count,
             "mean_prod_correlation": record.mean_prod_correlation,
             "mean_self_correlation": record.mean_self_correlation,

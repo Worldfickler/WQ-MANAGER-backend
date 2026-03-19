@@ -98,6 +98,7 @@ class LeaderboardGeniusUser(Base):
     combined_alpha_performance = Column(Double, nullable=True)
     combined_power_pool_alpha_performance = Column(Double, nullable=True)
     combined_selected_alpha_performance = Column(Double, nullable=True)
+    combined_osmosis_performance = Column(Double, nullable=True)
     operator_count = Column(Integer, nullable=True)
     operator_avg = Column(Double, nullable=True)
     field_count = Column(Integer, nullable=True)

@@ -138,6 +138,9 @@ async def get_user_combined_history_map(
             func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label(
                 "combined_selected_alpha_performance"
             ),
+            func.max(LeaderboardGeniusUser.combined_osmosis_performance).label(
+                "combined_osmosis_performance"
+            ),
         )
         .where(
             LeaderboardGeniusUser.delete_flag == False,
@@ -164,6 +167,9 @@ async def get_user_combined_history_map(
                 row.combined_selected_alpha_performance
             )
             if row.combined_selected_alpha_performance is not None
+            else None,
+            "combined_osmosis_performance": float(row.combined_osmosis_performance)
+            if row.combined_osmosis_performance is not None
             else None,
         }
         for row in rows
@@ -242,6 +248,9 @@ async def get_user_metric_trends_by_event(
                 func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label(
                     "combined_selected_alpha_performance"
                 ),
+                func.max(LeaderboardGeniusUser.combined_osmosis_performance).label(
+                    "combined_osmosis_performance"
+                ),
             )
             .where(
                 LeaderboardGeniusUser.delete_flag == False,
@@ -261,6 +270,9 @@ async def get_user_metric_trends_by_event(
                 else None,
                 "combined_selected_alpha_performance": float(row.combined_selected_alpha_performance)
                 if row.combined_selected_alpha_performance is not None
+                else None,
+                "combined_osmosis_performance": float(row.combined_osmosis_performance)
+                if row.combined_osmosis_performance is not None
                 else None,
             }
             for row in combined_rows_result.all()
@@ -287,6 +299,9 @@ async def get_user_metric_trends_by_event(
             ),
             "combined_selected_alpha_performance": combined_map.get(event["update_date"], {}).get(
                 "combined_selected_alpha_performance"
+            ),
+            "combined_osmosis_performance": combined_map.get(event["update_date"], {}).get(
+                "combined_osmosis_performance"
             ),
         }
         for event in [combined_events_by_date[d] for d in combined_event_dates]
