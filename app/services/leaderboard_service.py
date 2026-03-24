@@ -8,7 +8,7 @@ from app.models.leaderboard import (
     EventUpdateRecord,
 )
 from typing import List, Dict, Optional
-from datetime import date
+from datetime import date, timedelta
 
 __all__ = [
     "get_country_weight_time_series",
@@ -28,18 +28,13 @@ __all__ = [
     "get_summary_statistics",
     "get_value_factor_analysis",
     "get_value_factor_user_changes",
+    "get_value_factor_available_update_dates",
     "get_combined_analysis",
     "get_combined_user_changes",
+    "get_combined_available_update_dates",
     "get_consultant_merged_page",
     "get_user_metric_trends_by_event",
 ]
-
-VALUE_FACTOR_BASE_DATE = date(2026, 2, 10)
-VALUE_FACTOR_TARGET_DATE = date(2026, 2, 11)
-COMBINED_BASE_DATE = date(2026, 2, 10)
-COMBINED_TARGET_DATE = date(2026, 2, 11)
-
-
 def get_country_weight_time_series(db: Session, countries: List[str] = None, limit_days: int = 30) -> Dict:
     """
     Get weight_factor time series data for specified countries
@@ -618,6 +613,32 @@ def get_genius_available_levels(db: Session) -> List[str]:
     ).distinct().all()
 
     return [level[0] for level in levels if level[0]]
+
+
+def get_combined_available_update_dates(db: Session) -> List[str]:
+    rows = db.query(
+        EventUpdateRecord.update_date
+    ).filter(
+        EventUpdateRecord.update_date.isnot(None),
+        func.lower(EventUpdateRecord.update_content) == "combined",
+    ).distinct().order_by(
+        EventUpdateRecord.update_date.desc()
+    ).all()
+
+    return [row[0].isoformat() for row in rows if row[0] is not None]
+
+
+def get_value_factor_available_update_dates(db: Session) -> List[str]:
+    rows = db.query(
+        EventUpdateRecord.update_date
+    ).filter(
+        EventUpdateRecord.update_date.isnot(None),
+        func.lower(EventUpdateRecord.update_content) == "value_factor",
+    ).distinct().order_by(
+        EventUpdateRecord.update_date.desc()
+    ).all()
+
+    return [row[0].isoformat() for row in rows if row[0] is not None]
 
 
 def _resolve_date_range(db: Session, start_date: str | None, end_date: str | None):
@@ -1385,6 +1406,7 @@ def _aggregate_value_factor_dimension(
 
 def get_value_factor_user_changes(
     db: Session,
+    target_update_date: Optional[date] = None,
     sort_by: str = "change",
     sort_order: str = "desc",
     page: int = 1,
@@ -1393,6 +1415,18 @@ def get_value_factor_user_changes(
     genius_levels: List[str] | None = None,
     exclude_both_half: bool = False,
 ) -> Dict:
+    resolved_target_date = _resolve_value_factor_target_date(db, target_update_date=target_update_date)
+    if resolved_target_date is None:
+        safe_page = max(page, 1)
+        safe_page_size = max(page_size, 1)
+        return {
+            "total": 0,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "items": [],
+        }
+    resolved_base_date = resolved_target_date - timedelta(days=1)
+
     target_consultant_subq = db.query(
         LeaderboardConsultantUser.user.label("user"),
         func.max(LeaderboardConsultantUser.value_factor).label("target_value_factor"),
@@ -1400,7 +1434,7 @@ def get_value_factor_user_changes(
         func.max(LeaderboardConsultantUser.university).label("target_university"),
     ).filter(
         LeaderboardConsultantUser.delete_flag == False,
-        LeaderboardConsultantUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardConsultantUser.record_date == resolved_target_date,
         LeaderboardConsultantUser.user.isnot(None),
         LeaderboardConsultantUser.value_factor.isnot(None),
     ).group_by(
@@ -1414,7 +1448,7 @@ def get_value_factor_user_changes(
         func.max(LeaderboardConsultantUser.university).label("base_university"),
     ).filter(
         LeaderboardConsultantUser.delete_flag == False,
-        LeaderboardConsultantUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardConsultantUser.record_date == resolved_base_date,
         LeaderboardConsultantUser.user.isnot(None),
         LeaderboardConsultantUser.value_factor.isnot(None),
     ).group_by(
@@ -1427,7 +1461,7 @@ def get_value_factor_user_changes(
         func.max(LeaderboardGeniusUser.country).label("target_genius_country"),
     ).filter(
         LeaderboardGeniusUser.delete_flag == False,
-        LeaderboardGeniusUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardGeniusUser.record_date == resolved_target_date,
         LeaderboardGeniusUser.user.isnot(None),
     ).group_by(
         LeaderboardGeniusUser.user,
@@ -1439,7 +1473,7 @@ def get_value_factor_user_changes(
         func.max(LeaderboardGeniusUser.country).label("base_genius_country"),
     ).filter(
         LeaderboardGeniusUser.delete_flag == False,
-        LeaderboardGeniusUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardGeniusUser.record_date == resolved_base_date,
         LeaderboardGeniusUser.user.isnot(None),
     ).group_by(
         LeaderboardGeniusUser.user,
@@ -1542,24 +1576,74 @@ def get_value_factor_user_changes(
     }
 
 
+def _resolve_value_factor_target_date(db: Session, target_update_date: Optional[date] = None) -> Optional[date]:
+    available_dates = db.query(
+        EventUpdateRecord.update_date
+    ).filter(
+        EventUpdateRecord.update_date.isnot(None),
+        func.lower(EventUpdateRecord.update_content) == "value_factor",
+    ).distinct().order_by(
+        EventUpdateRecord.update_date.desc()
+    ).all()
+    available = [row[0] for row in available_dates if row[0] is not None]
+    if not available:
+        return None
+    if target_update_date is not None:
+        return target_update_date
+    return available[0]
+
+
+def _resolve_combined_target_date(db: Session, target_update_date: Optional[date] = None) -> Optional[date]:
+    available_dates = db.query(
+        EventUpdateRecord.update_date
+    ).filter(
+        EventUpdateRecord.update_date.isnot(None),
+        func.lower(EventUpdateRecord.update_content) == "combined",
+    ).distinct().order_by(
+        EventUpdateRecord.update_date.desc()
+    ).all()
+    available = [row[0] for row in available_dates if row[0] is not None]
+    if not available:
+        return None
+    if target_update_date is not None:
+        return target_update_date
+    return available[0]
+
+
 def _collect_combined_rows(
     db: Session,
+    target_update_date: Optional[date] = None,
     countries: List[str] | None = None,
     genius_levels: List[str] | None = None,
     exclude_alpha_both_zero: bool = False,
     exclude_power_pool_both_zero: bool = False,
     exclude_selected_both_zero: bool = False,
+    exclude_osmosis_both_zero: bool = False,
 ) -> Dict:
+    resolved_target_date = _resolve_combined_target_date(db, target_update_date=target_update_date)
+    if resolved_target_date is None:
+        return {
+            "base_record_date": None,
+            "target_record_date": None,
+            "users_on_target_date": 0,
+            "users_on_base_date": 0,
+            "new_users": 0,
+            "missing_users": 0,
+            "rows": [],
+        }
+    resolved_base_date = resolved_target_date - timedelta(days=1)
+
     target_subq = db.query(
         LeaderboardGeniusUser.user.label("user"),
         func.max(LeaderboardGeniusUser.combined_alpha_performance).label("target_alpha"),
         func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label("target_power_pool"),
         func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label("target_selected"),
+        func.max(LeaderboardGeniusUser.combined_osmosis_performance).label("target_osmosis"),
         func.max(LeaderboardGeniusUser.country).label("target_country"),
         func.max(LeaderboardGeniusUser.genius_level).label("target_genius_level"),
     ).filter(
         LeaderboardGeniusUser.delete_flag == False,
-        LeaderboardGeniusUser.record_date == COMBINED_TARGET_DATE,
+        LeaderboardGeniusUser.record_date == resolved_target_date,
         LeaderboardGeniusUser.user.isnot(None),
     ).group_by(
         LeaderboardGeniusUser.user,
@@ -1570,11 +1654,12 @@ def _collect_combined_rows(
         func.max(LeaderboardGeniusUser.combined_alpha_performance).label("base_alpha"),
         func.max(LeaderboardGeniusUser.combined_power_pool_alpha_performance).label("base_power_pool"),
         func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label("base_selected"),
+        func.max(LeaderboardGeniusUser.combined_osmosis_performance).label("base_osmosis"),
         func.max(LeaderboardGeniusUser.country).label("base_country"),
         func.max(LeaderboardGeniusUser.genius_level).label("base_genius_level"),
     ).filter(
         LeaderboardGeniusUser.delete_flag == False,
-        LeaderboardGeniusUser.record_date == COMBINED_BASE_DATE,
+        LeaderboardGeniusUser.record_date == resolved_base_date,
         LeaderboardGeniusUser.user.isnot(None),
     ).group_by(
         LeaderboardGeniusUser.user,
@@ -1592,6 +1677,8 @@ def _collect_combined_rows(
         base_subq.c.base_power_pool,
         target_subq.c.target_selected,
         base_subq.c.base_selected,
+        target_subq.c.target_osmosis,
+        base_subq.c.base_osmosis,
         func.coalesce(target_subq.c.target_country, base_subq.c.base_country).label("country"),
         func.coalesce(target_subq.c.target_genius_level, base_subq.c.base_genius_level).label("genius_level"),
     ).outerjoin(
@@ -1644,12 +1731,27 @@ def _collect_combined_rows(
         target_power_pool = float(row.target_power_pool)
         base_selected = float(row.base_selected)
         target_selected = float(row.target_selected)
+        base_osmosis = float(row.base_osmosis) if row.base_osmosis is not None else None
+        target_osmosis = float(row.target_osmosis) if row.target_osmosis is not None else None
+        osmosis_change = (
+            target_osmosis - base_osmosis
+            if target_osmosis is not None and base_osmosis is not None
+            else None
+        )
 
         if exclude_alpha_both_zero and abs(base_alpha) < 1e-12 and abs(target_alpha) < 1e-12:
             continue
         if exclude_power_pool_both_zero and abs(base_power_pool) < 1e-12 and abs(target_power_pool) < 1e-12:
             continue
         if exclude_selected_both_zero and abs(base_selected) < 1e-12 and abs(target_selected) < 1e-12:
+            continue
+        if (
+            exclude_osmosis_both_zero
+            and base_osmosis is not None
+            and target_osmosis is not None
+            and abs(base_osmosis) < 1e-12
+            and abs(target_osmosis) < 1e-12
+        ):
             continue
 
         comparable_rows.append({
@@ -1665,9 +1767,14 @@ def _collect_combined_rows(
             "base_selected": base_selected,
             "target_selected": target_selected,
             "selected_change": target_selected - base_selected,
+            "base_osmosis": base_osmosis,
+            "target_osmosis": target_osmosis,
+            "osmosis_change": osmosis_change,
         })
 
     return {
+        "base_record_date": resolved_base_date,
+        "target_record_date": resolved_target_date,
         "users_on_target_date": users_on_target_date,
         "users_on_base_date": users_on_base_date,
         "new_users": new_users,
@@ -1708,19 +1815,23 @@ def _build_combined_metric_summary(
 
 def get_combined_analysis(
     db: Session,
+    target_update_date: Optional[date] = None,
     countries: List[str] | None = None,
     genius_levels: List[str] | None = None,
     exclude_alpha_both_zero: bool = False,
     exclude_power_pool_both_zero: bool = False,
     exclude_selected_both_zero: bool = False,
+    exclude_osmosis_both_zero: bool = False,
 ) -> Dict:
     payload = _collect_combined_rows(
         db,
+        target_update_date=target_update_date,
         countries=countries,
         genius_levels=genius_levels,
         exclude_alpha_both_zero=exclude_alpha_both_zero,
         exclude_power_pool_both_zero=exclude_power_pool_both_zero,
         exclude_selected_both_zero=exclude_selected_both_zero,
+        exclude_osmosis_both_zero=exclude_osmosis_both_zero,
     )
     rows = payload["rows"]
 
@@ -1749,6 +1860,20 @@ def get_combined_analysis(
             "target_selected",
             "selected_change",
         ),
+        _build_combined_metric_summary(
+            [
+                row
+                for row in rows
+                if row["base_osmosis"] is not None
+                and row["target_osmosis"] is not None
+                and row["osmosis_change"] is not None
+            ],
+            "combined_osmosis_performance",
+            "Osmosis",
+            "base_osmosis",
+            "target_osmosis",
+            "osmosis_change",
+        ),
     ]
 
     distributions = {
@@ -1764,11 +1889,15 @@ def get_combined_analysis(
             [float(row["selected_change"]) for row in rows],
             bins=10,
         ),
+        "combined_osmosis_performance": _build_distribution(
+            [float(row["osmosis_change"]) for row in rows if row["osmosis_change"] is not None],
+            bins=10,
+        ),
     }
 
     return {
-        "base_record_date": COMBINED_BASE_DATE.isoformat(),
-        "target_record_date": COMBINED_TARGET_DATE.isoformat(),
+        "base_record_date": payload["base_record_date"].isoformat() if payload["base_record_date"] else "",
+        "target_record_date": payload["target_record_date"].isoformat() if payload["target_record_date"] else "",
         "summary": {
             "users_on_target_date": payload["users_on_target_date"],
             "users_on_base_date": payload["users_on_base_date"],
@@ -1783,6 +1912,7 @@ def get_combined_analysis(
 
 def get_combined_user_changes(
     db: Session,
+    target_update_date: Optional[date] = None,
     sort_by: str = "alpha_change",
     sort_order: str = "desc",
     page: int = 1,
@@ -1792,14 +1922,17 @@ def get_combined_user_changes(
     exclude_alpha_both_zero: bool = False,
     exclude_power_pool_both_zero: bool = False,
     exclude_selected_both_zero: bool = False,
+    exclude_osmosis_both_zero: bool = False,
 ) -> Dict:
     payload = _collect_combined_rows(
         db,
+        target_update_date=target_update_date,
         countries=countries,
         genius_levels=genius_levels,
         exclude_alpha_both_zero=exclude_alpha_both_zero,
         exclude_power_pool_both_zero=exclude_power_pool_both_zero,
         exclude_selected_both_zero=exclude_selected_both_zero,
+        exclude_osmosis_both_zero=exclude_osmosis_both_zero,
     )
     rows = payload["rows"]
 
@@ -1813,10 +1946,25 @@ def get_combined_user_changes(
         "target_power_pool": "target_power_pool",
         "base_selected": "base_selected",
         "target_selected": "target_selected",
+        "osmosis_change": "osmosis_change",
+        "base_osmosis": "base_osmosis",
+        "target_osmosis": "target_osmosis",
     }
     sort_key = sort_key_map.get(sort_by, "alpha_change")
-    reverse = sort_order != "asc"
-    rows.sort(key=lambda item: float(item[sort_key]), reverse=reverse)
+    if sort_order == "asc":
+        rows.sort(
+            key=lambda item: (
+                item[sort_key] is None,
+                float(item[sort_key]) if item[sort_key] is not None else 0.0,
+            )
+        )
+    else:
+        rows.sort(
+            key=lambda item: (
+                item[sort_key] is None,
+                -(float(item[sort_key]) if item[sort_key] is not None else 0.0),
+            )
+        )
 
     safe_page = max(page, 1)
     safe_page_size = max(page_size, 1)
@@ -1843,6 +1991,9 @@ def get_combined_user_changes(
                 "base_selected": round(float(item["base_selected"]), 4),
                 "target_selected": round(float(item["target_selected"]), 4),
                 "selected_change": round(float(item["selected_change"]), 4),
+                "base_osmosis": round(float(item["base_osmosis"]), 4) if item["base_osmosis"] is not None else None,
+                "target_osmosis": round(float(item["target_osmosis"]), 4) if item["target_osmosis"] is not None else None,
+                "osmosis_change": round(float(item["osmosis_change"]), 4) if item["osmosis_change"] is not None else None,
             }
             for item in page_items
         ],
@@ -2157,7 +2308,40 @@ def get_consultant_merged_page(
     }
 
 
-def get_value_factor_analysis(db: Session, exclude_both_half: bool = False) -> Dict:
+def get_value_factor_analysis(
+    db: Session,
+    target_update_date: Optional[date] = None,
+    exclude_both_half: bool = False,
+) -> Dict:
+    resolved_target_date = _resolve_value_factor_target_date(db, target_update_date=target_update_date)
+    if resolved_target_date is None:
+        return {
+            "base_record_date": "",
+            "target_record_date": "",
+            "summary": {
+                "users_on_target_date": 0,
+                "users_on_base_date": 0,
+                "comparable_users": 0,
+                "new_users": 0,
+                "missing_users": 0,
+                "increased_users": 0,
+                "decreased_users": 0,
+                "unchanged_users": 0,
+                "avg_target_value_factor": 0.0,
+                "avg_base_value_factor": 0.0,
+                "avg_change": 0.0,
+                "median_change": 0.0,
+                "max_increase": 0.0,
+                "max_decrease": 0.0,
+            },
+            "by_country": [],
+            "by_university": [],
+            "top_gainers": [],
+            "top_decliners": [],
+            "distribution": _build_distribution([], bins=10),
+        }
+    resolved_base_date = resolved_target_date - timedelta(days=1)
+
     target_subq = db.query(
         LeaderboardConsultantUser.user.label("user"),
         func.max(LeaderboardConsultantUser.value_factor).label("target_value_factor"),
@@ -2165,7 +2349,7 @@ def get_value_factor_analysis(db: Session, exclude_both_half: bool = False) -> D
         func.max(LeaderboardConsultantUser.university).label("target_university"),
     ).filter(
         LeaderboardConsultantUser.delete_flag == False,
-        LeaderboardConsultantUser.record_date == VALUE_FACTOR_TARGET_DATE,
+        LeaderboardConsultantUser.record_date == resolved_target_date,
         LeaderboardConsultantUser.user.isnot(None),
         LeaderboardConsultantUser.value_factor.isnot(None),
     ).group_by(
@@ -2179,7 +2363,7 @@ def get_value_factor_analysis(db: Session, exclude_both_half: bool = False) -> D
         func.max(LeaderboardConsultantUser.university).label("base_university"),
     ).filter(
         LeaderboardConsultantUser.delete_flag == False,
-        LeaderboardConsultantUser.record_date == VALUE_FACTOR_BASE_DATE,
+        LeaderboardConsultantUser.record_date == resolved_base_date,
         LeaderboardConsultantUser.user.isnot(None),
         LeaderboardConsultantUser.value_factor.isnot(None),
     ).group_by(
@@ -2290,8 +2474,8 @@ def get_value_factor_analysis(db: Session, exclude_both_half: bool = False) -> D
     ]
 
     return {
-        "base_record_date": VALUE_FACTOR_BASE_DATE.isoformat(),
-        "target_record_date": VALUE_FACTOR_TARGET_DATE.isoformat(),
+        "base_record_date": resolved_base_date.isoformat(),
+        "target_record_date": resolved_target_date.isoformat(),
         "summary": summary,
         "by_country": _aggregate_value_factor_dimension(comparable_rows, "country", top_n=20),
         "by_university": _aggregate_value_factor_dimension(comparable_rows, "university", top_n=20),
@@ -2359,6 +2543,9 @@ def get_user_metric_trends_by_event(db: Session, user: str) -> Dict:
             func.max(LeaderboardGeniusUser.combined_selected_alpha_performance).label(
                 "combined_selected_alpha_performance"
             ),
+            func.max(LeaderboardGeniusUser.combined_osmosis_performance).label(
+                "combined_osmosis_performance"
+            ),
         ).filter(
             LeaderboardGeniusUser.delete_flag == False,
             LeaderboardGeniusUser.user == user,
@@ -2376,6 +2563,9 @@ def get_user_metric_trends_by_event(db: Session, user: str) -> Dict:
                 else None,
                 "combined_selected_alpha_performance": float(row.combined_selected_alpha_performance)
                 if row.combined_selected_alpha_performance is not None
+                else None,
+                "combined_osmosis_performance": float(row.combined_osmosis_performance)
+                if row.combined_osmosis_performance is not None
                 else None,
             }
             for row in combined_rows
@@ -2402,6 +2592,9 @@ def get_user_metric_trends_by_event(db: Session, user: str) -> Dict:
             ),
             "combined_selected_alpha_performance": combined_map.get(event["update_date"], {}).get(
                 "combined_selected_alpha_performance"
+            ),
+            "combined_osmosis_performance": combined_map.get(event["update_date"], {}).get(
+                "combined_osmosis_performance"
             ),
         }
         for event in [combined_events_by_date[d] for d in combined_event_dates]

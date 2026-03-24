@@ -239,6 +239,9 @@ class CombinedUserChangeItem(BaseModel):
     base_selected: float
     target_selected: float
     selected_change: float
+    base_osmosis: Optional[float] = None
+    target_osmosis: Optional[float] = None
+    osmosis_change: Optional[float] = None
 
 
 class CombinedUserChangePageResponse(BaseModel):
@@ -316,6 +319,7 @@ class CombinedTrendPoint(BaseModel):
     combined_alpha_performance: Optional[float] = None
     combined_power_pool_alpha_performance: Optional[float] = None
     combined_selected_alpha_performance: Optional[float] = None
+    combined_osmosis_performance: Optional[float] = None
 
 
 class UserMetricTrendResponse(BaseModel):

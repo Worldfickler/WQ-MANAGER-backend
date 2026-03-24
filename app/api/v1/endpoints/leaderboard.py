@@ -94,6 +94,26 @@ async def get_genius_available_levels(
     return await db.run_sync(lambda sync_db: leaderboard_service.get_genius_available_levels(sync_db))
 
 
+@router.get("/combined-available-update-dates", response_model=List[str])
+@cache_response("leaderboard:combined-available-update-dates", vary_by_user=False)
+async def get_combined_available_update_dates(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    return await db.run_sync(lambda sync_db: leaderboard_service.get_combined_available_update_dates(sync_db))
+
+
+@router.get("/value-factor-available-update-dates", response_model=List[str])
+@cache_response("leaderboard:value-factor-available-update-dates", vary_by_user=False)
+async def get_value_factor_available_update_dates(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    return await db.run_sync(lambda sync_db: leaderboard_service.get_value_factor_available_update_dates(sync_db))
+
+
 @router.get("/country-submission-timeseries", response_model=List[CountrySubmissionTimeSeriesResponse])
 @cache_response("leaderboard:country-submission-timeseries", vary_by_user=False)
 async def get_country_submission_timeseries(
@@ -407,6 +427,7 @@ async def get_genius_level_weight_changes(
 @cache_response("leaderboard:combined-analysis", vary_by_user=False)
 async def get_combined_analysis(
     request: Request,
+    update_date: Optional[str] = Query(None, description="Combined update date (YYYY-MM-DD)"),
     countries: Optional[str] = Query(
         None,
         description="Comma-separated country codes (e.g., 'CN,US,IN')",
@@ -427,19 +448,31 @@ async def get_combined_analysis(
         False,
         description="Exclude rows where base and target combined_selected_alpha_performance are both 0",
     ),
+    exclude_osmosis_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_osmosis_performance are both 0",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: SystemUser = Depends(get_current_user),
 ):
+    parsed_update_date = None
+    if update_date:
+        try:
+            parsed_update_date = datetime.strptime(update_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="update_date must be in YYYY-MM-DD format")
     country_list = [country.strip() for country in countries.split(",") if country.strip()] if countries else None
     level_list = [level.strip() for level in levels.split(",") if level.strip()] if levels else None
     data = await db.run_sync(
         lambda sync_db: leaderboard_service.get_combined_analysis(
             sync_db,
+            target_update_date=parsed_update_date,
             countries=country_list,
             genius_levels=level_list,
             exclude_alpha_both_zero=exclude_alpha_both_zero,
             exclude_power_pool_both_zero=exclude_power_pool_both_zero,
             exclude_selected_both_zero=exclude_selected_both_zero,
+            exclude_osmosis_both_zero=exclude_osmosis_both_zero,
         )
     )
     return CombinedAnalysisResponse(**data)
@@ -449,13 +482,15 @@ async def get_combined_analysis(
 @cache_response("leaderboard:combined-user-changes", vary_by_user=False)
 async def get_combined_user_changes(
     request: Request,
+    update_date: Optional[str] = Query(None, description="Combined update date (YYYY-MM-DD)"),
     sort_by: str = Query(
         "alpha_change",
         description=(
-            "Sort field: alpha_change|power_pool_change|selected_change|"
-            "base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected"
+            "Sort field: alpha_change|power_pool_change|selected_change|osmosis_change|"
+            "base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected|"
+            "base_osmosis|target_osmosis"
         ),
-        regex="^(alpha_change|power_pool_change|selected_change|base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected)$",
+        regex="^(alpha_change|power_pool_change|selected_change|osmosis_change|base_alpha|target_alpha|base_power_pool|target_power_pool|base_selected|target_selected|base_osmosis|target_osmosis)$",
     ),
     sort_order: str = Query(
         "desc",
@@ -478,14 +513,25 @@ async def get_combined_user_changes(
         False,
         description="Exclude rows where base and target combined_selected_alpha_performance are both 0",
     ),
+    exclude_osmosis_both_zero: bool = Query(
+        False,
+        description="Exclude rows where base and target combined_osmosis_performance are both 0",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: SystemUser = Depends(get_current_user),
 ):
+    parsed_update_date = None
+    if update_date:
+        try:
+            parsed_update_date = datetime.strptime(update_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="update_date must be in YYYY-MM-DD format")
     country_list = [country.strip() for country in countries.split(",") if country.strip()] if countries else None
     level_list = [level.strip() for level in levels.split(",") if level.strip()] if levels else None
     data = await db.run_sync(
         lambda sync_db: leaderboard_service.get_combined_user_changes(
             sync_db,
+            target_update_date=parsed_update_date,
             sort_by=sort_by,
             sort_order=sort_order,
             page=page,
@@ -495,6 +541,7 @@ async def get_combined_user_changes(
             exclude_alpha_both_zero=exclude_alpha_both_zero,
             exclude_power_pool_both_zero=exclude_power_pool_both_zero,
             exclude_selected_both_zero=exclude_selected_both_zero,
+            exclude_osmosis_both_zero=exclude_osmosis_both_zero,
         )
     )
     return CombinedUserChangePageResponse(**data)
@@ -562,6 +609,7 @@ async def get_consultant_merged_page(
 @cache_response("leaderboard:value-factor-analysis", vary_by_user=False)
 async def get_value_factor_analysis(
     request: Request,
+    update_date: Optional[str] = Query(None, description="Value Factor update date (YYYY-MM-DD)"),
     exclude_both_half: bool = Query(
         False,
         description="Exclude rows where base and target value_factor are both 0.5",
@@ -569,9 +617,16 @@ async def get_value_factor_analysis(
     db: AsyncSession = Depends(get_db),
     current_user: SystemUser = Depends(get_current_user),
 ):
+    parsed_update_date = None
+    if update_date:
+        try:
+            parsed_update_date = datetime.strptime(update_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="update_date must be in YYYY-MM-DD format")
     data = await db.run_sync(
         lambda sync_db: leaderboard_service.get_value_factor_analysis(
             sync_db,
+            target_update_date=parsed_update_date,
             exclude_both_half=exclude_both_half,
         )
     )
@@ -582,6 +637,7 @@ async def get_value_factor_analysis(
 @cache_response("leaderboard:value-factor-user-changes", vary_by_user=False)
 async def get_value_factor_user_changes(
     request: Request,
+    update_date: Optional[str] = Query(None, description="Value Factor update date (YYYY-MM-DD)"),
     order: Optional[str] = Query(
         None,
         description="Deprecated: sort order. Use sort_order instead.",
@@ -612,6 +668,12 @@ async def get_value_factor_user_changes(
     db: AsyncSession = Depends(get_db),
     current_user: SystemUser = Depends(get_current_user),
 ):
+    parsed_update_date = None
+    if update_date:
+        try:
+            parsed_update_date = datetime.strptime(update_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="update_date must be in YYYY-MM-DD format")
     effective_sort_order = order or sort_order
     level_list = [level.strip() for level in genius_levels.split(",") if level.strip()] if genius_levels else None
     country_list = [item.strip() for item in countries.split(",") if item.strip()] if countries else None
@@ -620,6 +682,7 @@ async def get_value_factor_user_changes(
     data = await db.run_sync(
         lambda sync_db: leaderboard_service.get_value_factor_user_changes(
             sync_db,
+            target_update_date=parsed_update_date,
             sort_by=sort_by,
             sort_order=effective_sort_order,
             page=page,
