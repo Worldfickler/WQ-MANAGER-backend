@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -17,6 +17,7 @@ class SystemUser(Base):
     username = Column(String(64), nullable=True, comment="用户名")
     email = Column(String(128), nullable=True, comment="邮箱")
     is_active = Column(Boolean, default=True, comment="是否激活")
+    page_auth = Column(Text, nullable=True, comment="页面访问权限码")
 
     def __repr__(self):
         return f"<SystemUser(id={self.id}, wq_id={self.wq_id}, username={self.username})>"

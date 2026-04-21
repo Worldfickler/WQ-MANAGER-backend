@@ -1,10 +1,17 @@
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.cache import cache_response
 from app.models.user import SystemUser
+from app.schemas.user import (
+    UserPageAuthSetRequest,
+    UserPageAuthSetResponse,
+    UserPageAuthStatusResponse,
+    UserPageAuthVerifyRequest,
+    UserPageAuthVerifyResponse,
+)
 from app.services import user_service
 
 router = APIRouter()
@@ -77,3 +84,48 @@ async def get_user_statistics(
         return {"message": "No data available"}
 
     return {"wq_id": current_user.wq_id, "username": current_user.username, **stats}
+
+
+@router.get("/page-auth/{page_key}", response_model=UserPageAuthStatusResponse)
+async def get_page_auth_status(
+    page_key: str,
+    current_user: SystemUser = Depends(get_current_user),
+):
+    try:
+        return await user_service.get_page_auth_status(current_user=current_user, page_key=page_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/page-auth/{page_key}/set", response_model=UserPageAuthSetResponse)
+async def set_page_auth_code(
+    page_key: str,
+    payload: UserPageAuthSetRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SystemUser = Depends(get_current_user),
+):
+    try:
+        return await user_service.set_page_auth_code(
+            db=db,
+            current_user=current_user,
+            page_key=page_key,
+            auth_code=payload.auth_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/page-auth/{page_key}/verify", response_model=UserPageAuthVerifyResponse)
+async def verify_page_auth_code(
+    page_key: str,
+    payload: UserPageAuthVerifyRequest,
+    current_user: SystemUser = Depends(get_current_user),
+):
+    try:
+        return await user_service.verify_page_auth_code(
+            current_user=current_user,
+            page_key=page_key,
+            auth_code=payload.auth_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

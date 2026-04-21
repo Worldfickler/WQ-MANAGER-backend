@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -14,16 +14,34 @@ from app.schemas.base_payment import (
     BasePaymentUploadRequest,
     BasePaymentUploadResponse,
 )
-from app.services import base_payment_service, minio_storage_service
+from app.services import base_payment_service, minio_storage_service, user_service
 
 router = APIRouter()
+
+
+async def require_base_payment_access(
+    x_page_auth_grant: str | None = Header(None, alias="X-Page-Auth-Grant"),
+    current_user: SystemUser = Depends(get_current_user),
+) -> SystemUser:
+    if not x_page_auth_grant:
+        raise HTTPException(status_code=403, detail="缺少 Base Payment 页面授权，请先完成口令验证")
+
+    is_grant_valid = await user_service.verify_page_auth_grant_token(
+        current_user=current_user,
+        page_key="base-payment",
+        grant_token=x_page_auth_grant,
+    )
+    if not is_grant_valid:
+        raise HTTPException(status_code=403, detail="Base Payment 页面授权无效或已过期，请重新验证口令")
+
+    return current_user
 
 
 @router.get("/dashboard", response_model=BasePaymentDashboardResponse)
 async def get_base_payment_dashboard(
     record_date: str | None = Query(None, description="记录日期（YYYY-MM-DD），不传则默认今天"),
     db: AsyncSession = Depends(get_db),
-    current_user: SystemUser = Depends(get_current_user),
+    current_user: SystemUser = Depends(require_base_payment_access),
 ):
     target_date = base_payment_service.get_today_record_date()
     if record_date:
@@ -50,7 +68,7 @@ async def get_base_payment_dashboard(
 async def get_my_today_payment_status(
     record_date: str | None = Query(None, description="记录日期（YYYY-MM-DD），不传则默认今天"),
     db: AsyncSession = Depends(get_db),
-    current_user: SystemUser = Depends(get_current_user),
+    current_user: SystemUser = Depends(require_base_payment_access),
 ):
     target_date = base_payment_service.get_today_record_date()
     if record_date:
@@ -60,17 +78,24 @@ async def get_my_today_payment_status(
             raise HTTPException(status_code=400, detail="record_date 必须是 YYYY-MM-DD 格式")
 
     record = await base_payment_service.get_user_record_by_date(db, current_user.wq_id, target_date)
+    consultant_defaults = await base_payment_service.get_consultant_metrics_by_date(
+        db,
+        current_user.wq_id,
+        target_date,
+    )
     if record is None:
         return {
             "has_uploaded_for_date": False,
             "record_date": target_date.isoformat(),
             "data": None,
+            "consultant_defaults": consultant_defaults,
         }
 
     return {
         "has_uploaded_for_date": True,
         "record_date": target_date.isoformat(),
         "data": base_payment_service.serialize_payment_record(record, current_user.wq_id),
+        "consultant_defaults": consultant_defaults,
     }
 
 
@@ -79,7 +104,7 @@ async def upload_base_payment_images(
     files: list[UploadFile] = File(..., description="图片文件列表"),
     record_date: str | None = Form(None, description="记录日期（YYYY-MM-DD）"),
     db: AsyncSession = Depends(get_db),
-    current_user: SystemUser = Depends(get_current_user),
+    current_user: SystemUser = Depends(require_base_payment_access),
 ):
     _ = db
     target_date = base_payment_service.get_today_record_date()
@@ -121,7 +146,7 @@ async def upload_base_payment_images(
 async def upload_my_base_payment(
     payload: BasePaymentUploadRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: SystemUser = Depends(get_current_user),
+    current_user: SystemUser = Depends(require_base_payment_access),
 ):
     record, is_created = await base_payment_service.upsert_user_payment_by_date(
         db=db,
@@ -162,7 +187,7 @@ async def get_base_payment_leaderboard(
         description="排序方向",
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: SystemUser = Depends(get_current_user),
+    current_user: SystemUser = Depends(require_base_payment_access),
 ):
     parsed_start_date = None
     parsed_end_date = None

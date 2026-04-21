@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.base_payment import BasePayment
+from app.models.leaderboard import LeaderboardConsultantUser
 from app.services.minio_storage_service import build_public_url, normalize_object_name
 
 __all__ = [
     "get_today_record_date",
     "get_user_record_by_date",
+    "get_consultant_metrics_by_date",
     "has_uploaded_on_date",
     "upsert_user_payment_by_date",
     "get_user_today_record",
@@ -134,6 +136,34 @@ async def get_user_record_by_date(db: AsyncSession, wq_id: str, target_date: dat
         )
     )
     return result.scalars().first()
+
+
+async def get_consultant_metrics_by_date(db: AsyncSession, wq_id: str, target_date: date) -> Optional[Dict]:
+    normalized_wq_id = (wq_id or "").strip().upper()
+    if not normalized_wq_id:
+        return None
+
+    result = await db.execute(
+        select(LeaderboardConsultantUser)
+        .where(
+            and_(
+                LeaderboardConsultantUser.delete_flag == False,
+                LeaderboardConsultantUser.record_date == target_date,
+                LeaderboardConsultantUser.user == normalized_wq_id,
+            )
+        )
+        .order_by(LeaderboardConsultantUser.id.desc())
+        .limit(1)
+    )
+    row = result.scalars().first()
+    if row is None:
+        return None
+
+    return {
+        "record_date": target_date.isoformat(),
+        "value_factor": float(row.value_factor) if row.value_factor is not None else None,
+        "daily_osmosis_rank": float(row.daily_osmosis_rank) if row.daily_osmosis_rank is not None else None,
+    }
 
 
 async def get_user_today_record(db: AsyncSession, wq_id: str) -> Optional[BasePayment]:

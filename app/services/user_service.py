@@ -1,23 +1,206 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from datetime import date, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from jose import JWTError, jwt
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.leaderboard import (
     EventUpdateRecord,
     LeaderboardConsultantUser,
     LeaderboardGeniusUser,
 )
+from app.models.user import SystemUser
 
 __all__ = [
     "get_user_history",
     "get_user_statistics",
     "get_user_combined_history_map",
     "get_user_metric_trends_by_event",
+    "get_page_auth_status",
+    "set_page_auth_code",
+    "verify_page_auth_code",
+    "verify_page_auth_grant_token",
 ]
+
+PAGE_AUTH_GRANT_TYPE = "page_auth_grant"
+PAGE_AUTH_GRANT_EXPIRE_MINUTES = 8 * 60
+
+
+def _normalize_page_key(page_key: str) -> str:
+    normalized = (page_key or "").strip().lower()
+    if not normalized:
+        raise ValueError("page_key 不能为空")
+    if len(normalized) > 64:
+        raise ValueError("page_key 长度不能超过 64")
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+    if any(char not in allowed for char in normalized):
+        raise ValueError("page_key 仅支持字母、数字、-、_")
+    return normalized
+
+
+def _parse_page_auth_map(raw_value: Optional[str]) -> Dict[str, str]:
+    if not raw_value:
+        return {}
+
+    value = raw_value.strip()
+    if not value:
+        return {}
+
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized_map: Dict[str, str] = {}
+    for key, auth_code in parsed.items():
+        if not isinstance(key, str) or not isinstance(auth_code, str):
+            continue
+        normalized_key = key.strip().lower()
+        normalized_code = auth_code.strip()
+        if normalized_key and normalized_code:
+            normalized_map[normalized_key] = normalized_code
+
+    return normalized_map
+
+
+def _dump_page_auth_map(page_auth_map: Dict[str, str]) -> str:
+    return json.dumps(page_auth_map, ensure_ascii=False)
+
+
+def _create_page_auth_grant_token(wq_id: str, page_key: str) -> tuple[str, datetime]:
+    now = datetime.utcnow()
+    expire = now + timedelta(minutes=PAGE_AUTH_GRANT_EXPIRE_MINUTES)
+    payload = {
+        "sub": (wq_id or "").strip().upper(),
+        "typ": PAGE_AUTH_GRANT_TYPE,
+        "page_key": page_key,
+        "iat": int(now.timestamp()),
+        "exp": expire,
+    }
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return token, expire
+
+
+async def get_page_auth_status(current_user: SystemUser, page_key: str) -> Dict[str, bool | str]:
+    normalized_key = _normalize_page_key(page_key)
+    page_auth_map = _parse_page_auth_map(current_user.page_auth)
+    return {
+        "page_key": normalized_key,
+        "is_set": bool(page_auth_map.get(normalized_key)),
+    }
+
+
+async def set_page_auth_code(
+    db: AsyncSession,
+    current_user: SystemUser,
+    page_key: str,
+    auth_code: str,
+) -> Dict[str, bool | str]:
+    normalized_key = _normalize_page_key(page_key)
+    normalized_code = (auth_code or "").strip()
+    if not normalized_code:
+        raise ValueError("auth_code 不能为空")
+    if len(normalized_code) > 128:
+        raise ValueError("auth_code 长度不能超过 128")
+
+    page_auth_map = _parse_page_auth_map(current_user.page_auth)
+    page_auth_map[normalized_key] = normalized_code
+
+    current_user.page_auth = _dump_page_auth_map(page_auth_map)
+    current_user.update_dt = datetime.utcnow()
+    await db.flush()
+    await db.refresh(current_user)
+
+    return {
+        "success": True,
+        "message": "页面访问口令设置成功",
+        "page_key": normalized_key,
+    }
+
+
+async def verify_page_auth_code(
+    current_user: SystemUser,
+    page_key: str,
+    auth_code: str,
+) -> Dict[str, bool | str | None]:
+    normalized_key = _normalize_page_key(page_key)
+    input_code = (auth_code or "").strip()
+    if not input_code:
+        return {
+            "page_key": normalized_key,
+            "verified": False,
+            "message": "请输入页面访问口令",
+            "access_grant_token": None,
+            "expires_at": None,
+        }
+
+    page_auth_map = _parse_page_auth_map(current_user.page_auth)
+    expected_code = page_auth_map.get(normalized_key)
+    if not expected_code:
+        return {
+            "page_key": normalized_key,
+            "verified": False,
+            "message": "尚未设置该页面访问口令",
+            "access_grant_token": None,
+            "expires_at": None,
+        }
+
+    verified = input_code == expected_code
+    access_grant_token = None
+    expires_at = None
+    if verified:
+        access_grant_token, expires_at_dt = _create_page_auth_grant_token(
+            current_user.wq_id,
+            normalized_key,
+        )
+        expires_at = expires_at_dt.isoformat() + "Z"
+
+    return {
+        "page_key": normalized_key,
+        "verified": verified,
+        "message": "验证通过" if verified else "访问口令错误",
+        "access_grant_token": access_grant_token,
+        "expires_at": expires_at,
+    }
+
+
+async def verify_page_auth_grant_token(
+    current_user: SystemUser,
+    page_key: str,
+    grant_token: str,
+) -> bool:
+    normalized_key = _normalize_page_key(page_key)
+    token = (grant_token or "").strip()
+    if not token:
+        return False
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return False
+
+    token_type = payload.get("typ")
+    token_page_key = (payload.get("page_key") or "").strip().lower()
+    token_sub = (payload.get("sub") or "").strip().upper()
+    current_wq_id = (current_user.wq_id or "").strip().upper()
+
+    if token_type != PAGE_AUTH_GRANT_TYPE:
+        return False
+    if token_page_key != normalized_key:
+        return False
+    if token_sub != current_wq_id:
+        return False
+
+    return True
 
 async def get_user_history(
     db: AsyncSession,

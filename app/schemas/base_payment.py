@@ -41,10 +41,17 @@ class BasePaymentUploadResponse(BaseModel):
     data: BasePaymentRecordResponse
 
 
+class BasePaymentConsultantDefaultsResponse(BaseModel):
+    record_date: str
+    value_factor: Optional[float] = None
+    daily_osmosis_rank: Optional[float] = None
+
+
 class BasePaymentMyStatusResponse(BaseModel):
     has_uploaded_for_date: bool
     record_date: str
     data: Optional[BasePaymentRecordResponse] = None
+    consultant_defaults: Optional[BasePaymentConsultantDefaultsResponse] = None
 
 
 class BasePaymentLeaderboardItem(BaseModel):
