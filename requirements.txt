@@ -11,6 +11,7 @@ pymysql==1.1.1
 aiomysql==0.2.0
 cryptography==44.0.0
 redis==5.0.7
+minio==7.2.8
 
 # Authentication
 python-jose[cryptography]==3.3.0

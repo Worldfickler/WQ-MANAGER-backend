@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     CACHE_EXPIRE_MINUTE: int = 0
     CACHE_TIMEZONE: str = "Asia/Shanghai"
 
+    # MinIO Object Storage
+    MINIO_ENDPOINT: str = ""
+    MINIO_ACCESS_KEY: str = ""
+    MINIO_SECRET_KEY: str = ""
+    MINIO_BUCKET: str = "wqmanager"
+    MINIO_SECURE: bool = False
+    MINIO_PUBLIC_BASE_URL: str = ""
+
     @property
     def ASYNC_DATABASE_URL(self) -> str:
         if self.DATABASE_URL.startswith("mysql+pymysql://"):

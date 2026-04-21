@@ -67,9 +67,17 @@ REDIS_URL=redis://:password@127.0.0.1:6379/0
 CACHE_EXPIRE_HOUR=14
 CACHE_EXPIRE_MINUTE=0
 CACHE_TIMEZONE=Asia/Shanghai
+
+MINIO_ENDPOINT=http://your-minio-host:9000
+MINIO_ACCESS_KEY=your-access-key
+MINIO_SECRET_KEY=your-secret-key
+MINIO_BUCKET=wqmanager
+MINIO_SECURE=False
+MINIO_PUBLIC_BASE_URL=http://your-minio-host:9000
 ```
 
 > `REDIS_URL` 为空时缓存自动关闭。
+> Base Payment 图片上传会写入 MinIO，并在 `base_payment.picture` 中以 JSON 数组格式存储可访问 URL 列表。
 
 ## 缓存策略
 
