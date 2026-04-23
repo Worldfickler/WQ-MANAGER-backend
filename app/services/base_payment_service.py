@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -143,12 +143,14 @@ async def get_consultant_metrics_by_date(db: AsyncSession, wq_id: str, target_da
     if not normalized_wq_id:
         return None
 
+    lookup_date = target_date - timedelta(days=1)
+
     result = await db.execute(
         select(LeaderboardConsultantUser)
         .where(
             and_(
                 LeaderboardConsultantUser.delete_flag == False,
-                LeaderboardConsultantUser.record_date == target_date,
+                LeaderboardConsultantUser.record_date == lookup_date,
                 LeaderboardConsultantUser.user == normalized_wq_id,
             )
         )
@@ -160,7 +162,7 @@ async def get_consultant_metrics_by_date(db: AsyncSession, wq_id: str, target_da
         return None
 
     return {
-        "record_date": target_date.isoformat(),
+        "record_date": lookup_date.isoformat(),
         "value_factor": float(row.value_factor) if row.value_factor is not None else None,
         "daily_osmosis_rank": float(row.daily_osmosis_rank) if row.daily_osmosis_rank is not None else None,
     }
