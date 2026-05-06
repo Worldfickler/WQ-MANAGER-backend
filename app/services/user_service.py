@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 PAGE_AUTH_GRANT_TYPE = "page_auth_grant"
-PAGE_AUTH_GRANT_EXPIRE_MINUTES = 8 * 60
+PAGE_AUTH_GRANT_EXPIRE_MINUTES = 365 * 24 * 60
 
 
 def _normalize_page_key(page_key: str) -> str:
