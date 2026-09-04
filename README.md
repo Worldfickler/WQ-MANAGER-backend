@@ -86,6 +86,23 @@ MINIO_PUBLIC_BASE_URL=http://your-minio-host:9000
 - 默认 TTL 到达每日指定时间（默认 14:00，Asia/Shanghai）
 - 登录相关接口不启用缓存
 
+## 赞助记录维护
+
+请先手动执行 `migrations/20260905_create_sponsor_donation.sql` 创建 `sponsor_donation` 表。每次赞助单独保存一条记录，`id` 为自增主键，`wq_id` 允许重复；前端接口按赞助记录逐条返回 `wq_id`，同一人多次赞助会返回多次，但不会返回金额。后端启动时不会自动创建或修改该表。
+
+新增赞助记录：
+
+```sql
+INSERT INTO sponsor_donation (wq_id, amount)
+VALUES ('YOUR_WQ_ID', 10.00);
+```
+
+删除赞助记录：
+
+```sql
+DELETE FROM sponsor_donation WHERE id = 1;
+```
+
 ## 日志
 
 日志目录：`backend/logs/`  
