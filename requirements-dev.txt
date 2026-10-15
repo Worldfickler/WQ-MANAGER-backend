@@ -1,0 +1,3 @@
+-r requirements.txt
+aiosqlite==0.22.1
+httpx>=0.27,<1

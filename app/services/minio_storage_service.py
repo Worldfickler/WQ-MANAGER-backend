@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import List, Tuple
@@ -191,3 +191,72 @@ async def upload_base_payment_images(files: List[UploadFile], wq_id: str, record
         )
 
     return uploaded_items
+
+
+def validate_submit_wait_image(content: bytes, content_type: str) -> str:
+    """Only allow raster images; never trust the client MIME type alone."""
+    detected = None
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected = ("image/png", ".png")
+    elif content.startswith(b"\xff\xd8\xff"):
+        detected = ("image/jpeg", ".jpg")
+    elif content.startswith((b"GIF87a", b"GIF89a")):
+        detected = ("image/gif", ".gif")
+    elif content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        detected = ("image/webp", ".webp")
+    if not content or len(content) > MAX_IMAGE_SIZE:
+        raise HTTPException(400, "图片不能为空，且每张不能超过 10MB")
+    if detected is None or content_type.lower() != detected[0]:
+        raise HTTPException(400, "仅支持内容与格式一致的 PNG、JPEG、GIF、WebP 图片")
+    return detected[1]
+
+
+async def upload_submit_wait_images(files: List[UploadFile]) -> List[UploadedImage]:
+    if not 1 <= len(files) <= 9:
+        raise HTTPException(400, "每次请上传 1 至 9 张图片")
+    bucket = (settings.MINIO_BUCKET or "wqmanager").strip() or "wqmanager"
+    client = None
+    uploaded: List[UploadedImage] = []
+    try:
+        client = _get_client()
+        await asyncio.to_thread(_ensure_bucket, client, bucket)
+        for file in files:
+            content = await file.read(MAX_IMAGE_SIZE + 1)
+            content_type = (file.content_type or "").lower()
+            suffix = validate_submit_wait_image(content, content_type)
+            # Do not expose the author's WQ ID or original filename in anonymous posts.
+            object_name = f"submit-wait/{datetime.now(timezone.utc).date().isoformat()}/{uuid4().hex}{suffix}"
+            await asyncio.to_thread(_put_object, client, bucket, object_name, content, content_type)
+            uploaded.append(UploadedImage(file.filename or "image", object_name, content_type,
+                                          len(content), _build_public_url(bucket, object_name)))
+        return uploaded
+    except Exception as exc:
+        if client is not None:
+            for item in uploaded:
+                try:
+                    await asyncio.to_thread(client.remove_object, bucket, item.object_name)
+                except Exception:
+                    pass
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, MinIOConfigError):
+            raise HTTPException(503, "图片存储尚未配置，请联系管理员配置 MinIO") from exc
+        raise HTTPException(502, "图片上传失败，请稍后重试") from exc
+    finally:
+        for file in files:
+            await file.close()
+
+
+async def open_submit_wait_image(object_name: str):
+    try:
+        client = _get_client()
+        bucket = (settings.MINIO_BUCKET or "wqmanager").strip() or "wqmanager"
+        return await asyncio.to_thread(client.get_object, bucket, object_name)
+    except S3Error as exc:
+        if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+            raise HTTPException(404, "图片不存在") from exc
+        raise HTTPException(502, "图片读取失败，请稍后重试") from exc
+    except MinIOConfigError as exc:
+        raise HTTPException(503, "图片存储尚未配置") from exc
+    except Exception as exc:
+        raise HTTPException(502, "图片读取失败，请稍后重试") from exc

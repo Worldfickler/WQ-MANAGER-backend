@@ -48,7 +48,7 @@ async def get_current_user(
     )
 
     payload = decode_access_token(credentials.credentials)
-    if payload is None:
+    if payload is None or payload.get("scope") in {"submit-wait-image", "submit-wait-sticker"}:
         raise credentials_exception
 
     wq_id = payload.get("sub")
@@ -79,7 +79,7 @@ async def get_current_user_optional(
 
     try:
         payload = decode_access_token(credentials.credentials)
-        if payload is None:
+        if payload is None or payload.get("scope") in {"submit-wait-image", "submit-wait-sticker"}:
             return None
 
         wq_id = payload.get("sub")

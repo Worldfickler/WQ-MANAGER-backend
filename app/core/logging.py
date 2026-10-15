@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from logging.config import dictConfig
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.config import settings
 
@@ -14,6 +15,22 @@ class MaxLevelFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         return record.levelno <= self.max_level
+
+
+class RedactAccessQueryFilter(logging.Filter):
+    """Keep signed image tickets and other credentials out of access log files."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3 and isinstance(record.args[2], str):
+            path = urlsplit(record.args[2])
+            sensitive = {"ticket", "token", "access_token", "refresh_token", "password", "secret", "api_key", "authorization"}
+            pairs = parse_qsl(path.query, keep_blank_values=True)
+            if any(key.lower() in sensitive for key, _ in pairs):
+                query = urlencode([(key, "***" if key.lower() in sensitive else value) for key, value in pairs])
+                args = list(record.args)
+                args[2] = urlunsplit((path.scheme, path.netloc, path.path, query, path.fragment))
+                record.args = tuple(args)
+        return True
 
 
 def setup_logging() -> None:
@@ -29,6 +46,7 @@ def setup_logging() -> None:
         "version": 1,
         "disable_existing_loggers": False,
         "filters": {
+            "redact_access_query": {"()": "app.core.logging.RedactAccessQueryFilter"},
             "max_warning": {
                 "()": "app.core.logging.MaxLevelFilter",
                 "max_level": logging.WARNING,
@@ -90,6 +108,7 @@ def setup_logging() -> None:
                 "propagate": False,
             },
             "uvicorn.access": {
+                "filters": ["redact_access_query"],
                 "handlers": ["info_file", "error_file", "console_file", "console"],
                 "level": settings.LOG_LEVEL,
                 "propagate": False,

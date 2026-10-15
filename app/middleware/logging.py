@@ -21,6 +21,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         method = request.method
         path = request.url.path
         query_params = str(request.query_params) if request.query_params else None
+        if "ticket" in request.query_params:
+            from urllib.parse import urlencode
+
+            query_params = urlencode([
+                (key, "***" if key == "ticket" else value)
+                for key, value in request.query_params.multi_items()
+            ])
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
 

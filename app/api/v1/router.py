@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, dashboard, leaderboard, user, feedback, base_payment, sponsor
+from app.api.v1.endpoints import auth, dashboard, leaderboard, user, feedback, base_payment, sponsor, submit_wait
 
 api_router = APIRouter()
 
@@ -11,3 +11,4 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboar
 api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(base_payment.router, prefix="/base-payment", tags=["base-payment"])
 api_router.include_router(sponsor.router, prefix="/sponsor", tags=["sponsor"])
+api_router.include_router(submit_wait.router, prefix="/submit-wait", tags=["submit-wait"])

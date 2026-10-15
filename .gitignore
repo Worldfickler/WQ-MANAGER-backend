@@ -8,20 +8,38 @@ venv/
 env/
 ENV/
 .venv
+.test-deps/
 *.egg-info/
 dist/
 build/
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
+.mcp.json
+.git-credentials
+.npmrc
+.pypirc
+.netrc
+.aws/
+.ssh/
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
 
 # Logs
 logs/
+*.log
 
 # IDE
 .vscode/
 .idea/
+.codex/
+.claude/
 *.swp
 *.swo
 *~
@@ -34,3 +52,9 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+__*check*.html
